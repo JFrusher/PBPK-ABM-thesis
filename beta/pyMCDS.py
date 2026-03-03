@@ -483,7 +483,10 @@ class pyMCDS:
                 # tags to differentiate repeated labels (usually space related)
                 dir_label = ['_x', '_y', '_z']
                 for i in range(int(label.get('size'))):
-                    data_labels.append(fixed_label + dir_label[i])
+                    if i < len(dir_label):
+                        data_labels.append(fixed_label + dir_label[i])
+                    else:
+                        data_labels.append(f"{fixed_label}_{i}")
             else:
                 data_labels.append(fixed_label)
 
@@ -498,6 +501,13 @@ class pyMCDS:
             sys.exit(1)
 
         print('Reading {}'.format(cell_path))
+
+        cell_cols = cell_data.shape[0]
+        if len(data_labels) < cell_cols:
+            for i in range(len(data_labels), cell_cols):
+                data_labels.append(f"unnamed_{i}")
+        elif len(data_labels) > cell_cols:
+            data_labels = data_labels[:cell_cols]
 
         for col in range(len(data_labels)):
             MCDS['discrete_cells'][data_labels[col]] = cell_data[col, :]

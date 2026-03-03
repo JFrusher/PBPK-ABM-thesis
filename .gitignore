@@ -41,6 +41,7 @@ slurm-*.out
 !*.h
 !*.m
 !*.sh
+!*.py
 !/main.cpp
 !/main-backup.cpp
 !/.gitignore

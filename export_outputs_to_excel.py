@@ -32,6 +32,9 @@ Flags:
     Number of parallel worker processes (N >= 1). Use >1 to parse files in parallel.
 - `--fast-mode`
     Skip expensive microenvironment, spatial, and attribute stats for faster runtime.
+- `--skip-bad-files`
+    Continue processing when a timestep file is malformed/unreadable; skipped files
+    are reported at the end.
 
 Primary output CSVs:
 - `summary_by_time.csv`
@@ -76,6 +79,7 @@ import re
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
@@ -231,6 +235,80 @@ def sample_xml_files(xml_files: list[Path], every_nth: int, max_files: int | Non
     return selected
 
 
+def output_index_from_name(path: Path) -> int | None:
+    match = OUTPUT_RE.search(path.name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def has_root_marker(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    return "<MultiCellDS" in text
+
+
+def is_well_formed_xml(path: Path) -> bool:
+    try:
+        ET.parse(path)
+        return True
+    except Exception:
+        return False
+
+
+def find_nearest_valid_template(xml_file: Path, max_search: int = 400) -> Path | None:
+    index = output_index_from_name(xml_file)
+    if index is None:
+        return None
+
+    parent = xml_file.parent
+    for step in range(1, max_search + 1):
+        candidate = parent / f"output{index - step:08d}.xml"
+        if index - step >= 0 and candidate.exists() and is_well_formed_xml(candidate) and has_root_marker(candidate):
+            return candidate
+
+    return None
+
+
+def build_repaired_xml_from_template(template_xml: Path, target_xml: Path) -> Path:
+    template_text = template_xml.read_text(encoding="utf-8", errors="replace")
+    target_token = target_xml.stem
+    repaired_text = re.sub(r"output\d{8}", target_token, template_text)
+
+    fd, repaired_path = tempfile.mkstemp(prefix=f"repaired_{target_token}_", suffix=".xml", dir=str(target_xml.parent))
+    os.close(fd)
+    repaired_file = Path(repaired_path)
+    repaired_file.write_text(repaired_text, encoding="utf-8")
+    return repaired_file
+
+
+def create_mcds_resilient(pyMCDS_class, constructor_mode: str, xml_file: Path):
+    output_path = str(xml_file.parent)
+    xml_name = xml_file.name
+
+    try:
+        mcds = create_mcds_with_mode(pyMCDS_class, constructor_mode, xml_name, output_path)
+        return mcds, False, None
+    except ET.ParseError as parse_exc:
+        template_xml = find_nearest_valid_template(xml_file)
+        if template_xml is None:
+            raise RuntimeError(
+                f"Malformed XML and no valid template found for recovery: {xml_file} ({parse_exc})"
+            ) from parse_exc
+
+        repaired_xml = build_repaired_xml_from_template(template_xml, xml_file)
+        try:
+            mcds = create_mcds_with_mode(pyMCDS_class, constructor_mode, repaired_xml.name, output_path)
+            return mcds, True, str(template_xml)
+        finally:
+            try:
+                repaired_xml.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def _process_xml_file(
     pyMCDS_class,
     constructor_mode: str,
@@ -240,11 +318,10 @@ def _process_xml_file(
     include_spatial: bool,
     include_attribute: bool,
 ):
-    output_path = str(xml_file.parent)
     xml_name = xml_file.name
 
-    mcds = create_mcds_with_mode(pyMCDS_class, constructor_mode, xml_name, output_path)
-    time_min = safe_value(mcds.get_time())
+    mcds, recovered_xml, recovery_template = create_mcds_resilient(pyMCDS_class, constructor_mode, xml_file)
+    time_min = safe_value(mcds.get_time()) if not recovered_xml else np.nan
     cell_df = mcds.get_cell_df()
 
     type_col = choose_column(cell_df, TYPE_COLUMNS)
@@ -264,7 +341,10 @@ def _process_xml_file(
         "xml_file": xml_name,
         "time_min": time_min,
         "total_cells": int(len(cell_df)),
+        "xml_recovered": recovered_xml,
     }
+    if recovered_xml and recovery_template:
+        summary_row["recovery_template"] = recovery_template
     if "dead" in cell_df.columns:
         dead_count = int(cell_df["dead"].sum())
         summary_row["dead_cells"] = dead_count
@@ -349,6 +429,8 @@ def _process_xml_file(
     return {
         "type_col": type_col,
         "phase_col": phase_col,
+        "recovered_xml": recovered_xml,
+        "recovery_template": recovery_template,
         "summary_rows": summary_rows,
         "type_rows": type_rows,
         "phase_rows": phase_rows,
@@ -587,6 +669,11 @@ def main():
         action="store_true",
         help="Skip expensive microenvironment, spatial, and attribute stats for faster export.",
     )
+    parser.add_argument(
+        "--skip-bad-files",
+        action="store_true",
+        help="Continue when individual XML timesteps fail to parse; report skipped files.",
+    )
 
     args = parser.parse_args()
     if args.every_nth < 1:
@@ -631,6 +718,8 @@ def main():
     include_microenv = not args.fast_mode
     include_spatial = not args.fast_mode
     include_attribute = not args.fast_mode
+    failed_files = []
+    recovered_files = []
 
     # Determine search path - extract zip if needed
     temp_context = tempfile.TemporaryDirectory() if use_zip and not args.extract_zip_to_folder else None
@@ -670,20 +759,34 @@ def main():
         if args.workers == 1:
             for idx, xml_file in enumerate(xml_files, start=1):
                 render_progress(idx, total_files, start_time)
-                result = _process_xml_file(
-                    pyMCDS,
-                    constructor_mode,
-                    xml_file,
-                    domain_dims,
-                    include_microenv,
-                    include_spatial,
-                    include_attribute,
-                )
+                try:
+                    result = _process_xml_file(
+                        pyMCDS,
+                        constructor_mode,
+                        xml_file,
+                        domain_dims,
+                        include_microenv,
+                        include_spatial,
+                        include_attribute,
+                    )
+                except Exception as exc:
+                    if args.skip_bad_files:
+                        failed_files.append({"xml_file": str(xml_file), "error": str(exc)})
+                        print(f"\nSkipping bad file: {xml_file} ({exc})", file=sys.stderr)
+                        continue
+                    raise RuntimeError(f"Failed while processing {xml_file}: {exc}") from exc
 
                 if type_col_used is None and result["type_col"] is not None:
                     type_col_used = result["type_col"]
                 if phase_col_used is None and result["phase_col"] is not None:
                     phase_col_used = result["phase_col"]
+                if result.get("recovered_xml"):
+                    recovered_files.append(
+                        {
+                            "xml_file": str(xml_file),
+                            "recovery_template": result.get("recovery_template") or "",
+                        }
+                    )
 
                 summary_rows.extend(result["summary_rows"])
                 type_rows.extend(result["type_rows"])
@@ -719,12 +822,27 @@ def main():
                 for future in concurrent.futures.as_completed(futures):
                     completed += 1
                     render_progress(completed, total_files, start_time)
-                    result = future.result()
+                    xml_file = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        if args.skip_bad_files:
+                            failed_files.append({"xml_file": str(xml_file), "error": str(exc)})
+                            print(f"\nSkipping bad file: {xml_file} ({exc})", file=sys.stderr)
+                            continue
+                        raise RuntimeError(f"Failed while processing {xml_file}: {exc}") from exc
 
                     if type_col_used is None and result["type_col"] is not None:
                         type_col_used = result["type_col"]
                     if phase_col_used is None and result["phase_col"] is not None:
                         phase_col_used = result["phase_col"]
+                    if result.get("recovered_xml"):
+                        recovered_files.append(
+                            {
+                                "xml_file": str(xml_file),
+                                "recovery_template": result.get("recovery_template") or "",
+                            }
+                        )
 
                     summary_rows.extend(result["summary_rows"])
                     type_rows.extend(result["type_rows"])
@@ -738,6 +856,10 @@ def main():
 
         print("".ljust(80), end="\r")
         print("Processing complete.")
+        if failed_files:
+            print(f"Skipped {len(failed_files)} bad file(s).")
+        if recovered_files:
+            print(f"Recovered {len(recovered_files)} malformed XML file(s) using nearest valid templates.")
     finally:
         if temp_context:
             temp_context.cleanup()
@@ -804,9 +926,15 @@ def main():
         {"key": "max_files", "value": args.max_files or ""},
         {"key": "workers", "value": args.workers},
         {"key": "fast_mode", "value": args.fast_mode},
+        {"key": "skip_bad_files", "value": args.skip_bad_files},
+        {"key": "skipped_bad_file_count", "value": len(failed_files)},
+        {"key": "recovered_xml_file_count", "value": len(recovered_files)},
         {"key": "constructor_mode", "value": constructor_mode},
     ]
     metadata_df = pd.DataFrame(metadata_rows)
+
+    failed_files_df = pd.DataFrame(failed_files)
+    recovered_files_df = pd.DataFrame(recovered_files)
 
     print("Writing CSV files...")
     summary_df.to_csv(out_dir / "summary_by_time.csv", index=False)
@@ -822,6 +950,8 @@ def main():
     micro_df.to_csv(out_dir / "microenvironment_stats.csv", index=False)
     long_df.to_csv(out_dir / "time_aligned_long.csv", index=False)
     metadata_df.to_csv(out_dir / "metadata.csv", index=False)
+    failed_files_df.to_csv(out_dir / "failed_files.csv", index=False)
+    recovered_files_df.to_csv(out_dir / "recovered_files.csv", index=False)
 
     print(f"Wrote CSV files to: {out_dir.resolve()}")
 

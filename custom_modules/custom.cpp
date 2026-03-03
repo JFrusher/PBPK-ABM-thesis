@@ -76,6 +76,7 @@
 #include <iomanip>
 #include <cstdlib>
 #include <atomic>
+#include <map>
 
 namespace damage_params {
     double base_damage_rate = 0.001;          // Damage per uM drug per minute
@@ -87,6 +88,81 @@ namespace damage_params {
     double quiescence_entry_rate = 0.0001;    // Stochastic quiescence entry
     double quiescence_stress_entry = 0.001;   // Damage-driven quiescence entry
     double quiescence_exit_rate = 0.00005;    // Exit rate when stress resolves
+}
+
+namespace rve_params {
+    constexpr double scaling_factor = 100.0;              // 1 agent = 100 biological cells
+    constexpr double volume_scale = scaling_factor;       // volume scales linearly with cell count
+    const double radius_scale = std::cbrt(scaling_factor); // radius scales with cube root
+    constexpr double uptake_scale = scaling_factor;       // Vmax / uptake scaling
+
+    // Logistic growth control (P(div) ~ r * (1 - N/K))
+    constexpr double default_local_carrying_capacity = 12.0;
+
+    // Cluster-like movement parameters
+    const double motility_speed_scale = 1.0 / radius_scale;
+    const double persistence_time_scale = radius_scale;
+    const double contact_relative_motion_damping = 1.0 / radius_scale;
+}
+
+std::map<int,double> g_rve_base_g1s_transition_rate_by_type;
+
+bool is_crc_tumor_type_name(const std::string& type_name)
+{
+    return (
+        type_name == "Cancer_stem" ||
+        type_name == "cancer_proliferating" ||
+        type_name == "cancer_differentiated"
+    );
+}
+
+bool is_crc_tumor_cell(Cell* pCell)
+{
+    if( pCell == nullptr )
+    { return false; }
+    return is_crc_tumor_type_name(pCell->type_name);
+}
+
+void apply_rve_scaling_to_definition(Cell_Definition* pCD)
+{
+    if( pCD == nullptr )
+    { return; }
+    if( !is_crc_tumor_type_name(pCD->name) )
+    { return; }
+
+    auto& volume = pCD->phenotype.volume;
+    volume.total *= rve_params::volume_scale;
+    volume.solid *= rve_params::volume_scale;
+    volume.fluid *= rve_params::volume_scale;
+    volume.nuclear *= rve_params::volume_scale;
+    volume.nuclear_fluid *= rve_params::volume_scale;
+    volume.nuclear_solid *= rve_params::volume_scale;
+    volume.cytoplasmic *= rve_params::volume_scale;
+    volume.cytoplasmic_fluid *= rve_params::volume_scale;
+    volume.cytoplasmic_solid *= rve_params::volume_scale;
+    volume.calcified_fraction *= 1.0;
+
+    volume.target_solid_cytoplasmic *= rve_params::volume_scale;
+    volume.target_solid_nuclear *= rve_params::volume_scale;
+    volume.rupture_volume *= rve_params::volume_scale;
+
+    pCD->phenotype.geometry.update(pCD->phenotype, 0.0);
+
+    for( int i = 0; i < pCD->phenotype.secretion.uptake_rates.size(); i++ )
+    {
+        pCD->phenotype.secretion.uptake_rates[i] *= rve_params::uptake_scale;
+    }
+
+    pCD->phenotype.motility.migration_speed *= rve_params::motility_speed_scale;
+    pCD->phenotype.motility.persistence_time *= rve_params::persistence_time_scale;
+
+    pCD->phenotype.mechanics.cell_cell_repulsion_strength *= rve_params::contact_relative_motion_damping;
+
+    int cycle_code = pCD->phenotype.cycle.model().code;
+    if( cycle_code == 6 || cycle_code == 7 )
+    {
+        g_rve_base_g1s_transition_rate_by_type[pCD->type] = pCD->phenotype.cycle.data.transition_rate(0,1);
+    }
 }
 
 namespace drug_metabolism {
@@ -480,6 +556,12 @@ void create_cell_types( void )
 
     // Build the map of cell definitions.
 	build_cell_definitions_maps(); 
+
+    // Apply RVE scaling for CRC tumor populations.
+    for( int i = 0; i < cell_definitions_by_index.size(); i++ )
+    {
+        apply_rve_scaling_to_definition(cell_definitions_by_index[i]);
+    }
 
     // Initialize signal and response dictionaries.
 	setup_signal_behavior_dictionaries(); 	
@@ -937,49 +1019,43 @@ void phenotype_function( Cell* pCell, Phenotype& phenotype, double dt )
 
     // ========== CAF CONTACT INHIBITION ==========
     // Block CAF proliferation when local density is high
-    if( pCell->type == 3 )  // CAF cell type ID
+    if( is_crc_tumor_cell(pCell) )
     {
-        // Check neighbor density within ~50 microns (approximately 2-3 cell diameters)
-        double interaction_radius = 50.0;  // Adjust this value to tune sensitivity
-        int num_neighbors = pCell->cells_in_my_container().size() - 1;  // -1 to exclude self
-        
-        // Alternatively, use precise neighbor counting (slower but more accurate):
-        // std::vector<Cell*> nearby = pCell->nearby_interacting_cells();
-        // int num_neighbors = nearby.size();
-        
-        // Contact inhibition threshold: stop division if too crowded
-        int neighbor_threshold = 8;  // Adjust this: higher = more permissive
-        
-        if( num_neighbors > neighbor_threshold )
+        int num_neighbors = (int)pCell->cells_in_my_container().size() - 1;
+        if( num_neighbors < 0 )
         {
-            // Find the G0/G1 -> S transition and block it
-            // CAF uses cycling quiescent model (code 7) or flow cytometry (code 6)
-            int cycle_code = pCell->phenotype.cycle.model().code;
-            
-            if( cycle_code == 7 )  // Cycling quiescent (Q -> G1 -> S)
-            {
-                // Block Q->G1 transition (index 0->1)
-                pCell->phenotype.cycle.data.transition_rate(0,1) = 0.0;
-            }
-            else if( cycle_code == 6 )  // Flow cytometry (G0/G1 -> S -> G2 -> M)
-            {
-                // Block G0/G1->S transition (phase 0 -> phase 1)
-                pCell->phenotype.cycle.data.transition_rate(0,1) = 0.0;
-            }
-            
-            // Optional: Force cells already in cycle back to quiescence
-            // (Uncomment if you want aggressive contact inhibition)
-            // if( current_phase == 0 )  // If in G0/G1 phase
-            // {
-            //     pCell->phenotype.cycle.data.transition_rate(0,1) = 0.0;
-            // }
+            num_neighbors = 0;
         }
-        else
+
+        static double local_K = []() {
+            if( parameters.doubles.find_index("rve_local_carrying_capacity") >= 0 )
+            {
+                return parameters.doubles("rve_local_carrying_capacity");
+            }
+            return rve_params::default_local_carrying_capacity;
+        }();
+        if( local_K <= 0.0 )
         {
-            // If not crowded, restore normal transition rate from XML settings
-            // (PhysiCell automatically resets this from the cell definition XML each timestep,
-            //  so you may not need to do anything here unless you're overriding frequently)
-            // To explicitly restore: get the baseline rate from cell_definitions_by_type[3]
+            local_K = rve_params::default_local_carrying_capacity;
+        }
+
+        double logistic_factor = 1.0 - ( (double)num_neighbors / local_K );
+        if( logistic_factor < 0.0 )
+        {
+            logistic_factor = 0.0;
+        }
+
+        int cycle_code = pCell->phenotype.cycle.model().code;
+        if( cycle_code == 6 || cycle_code == 7 )
+        {
+            double base_rate = pCell->phenotype.cycle.data.transition_rate(0,1);
+            auto it = g_rve_base_g1s_transition_rate_by_type.find(pCell->type);
+            if( it != g_rve_base_g1s_transition_rate_by_type.end() )
+            {
+                base_rate = it->second;
+            }
+
+            pCell->phenotype.cycle.data.transition_rate(0,1) = base_rate * logistic_factor;
         }
     }
 
@@ -1134,4 +1210,20 @@ void custom_function( Cell* pCell, Phenotype& phenotype , double dt )
 
 // Contact function (no-op placeholder).
 void contact_function( Cell* pMe, Phenotype& phenoMe , Cell* pOther, Phenotype& phenoOther , double dt )
-{ return; } 
+{
+    if( pMe == nullptr || pOther == nullptr )
+    { return; }
+
+    if( !is_crc_tumor_cell(pMe) || !is_crc_tumor_cell(pOther) )
+    { return; }
+
+    double damp = rve_params::contact_relative_motion_damping;
+    for( int i = 0; i < pMe->velocity.size(); i++ )
+    {
+        double v_mean = 0.5 * ( pMe->velocity[i] + pOther->velocity[i] );
+        pMe->velocity[i] = v_mean + damp * (pMe->velocity[i] - v_mean);
+        pOther->velocity[i] = v_mean + damp * (pOther->velocity[i] - v_mean);
+    }
+
+    return;
+} 

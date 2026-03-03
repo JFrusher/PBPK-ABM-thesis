@@ -1,7 +1,7 @@
 % MATLAB analysis helpers for PhysiCell CSV exports
 % Update outDir to the folder created by export_outputs_to_excel.py
 
-outDir = "physicell_csvs_8"; %CHANGE ME TODO run as arg
+outDir = "Physicell_results_2_fast"; %CHANGE ME TODO run as arg
 
 % ===== OUTPUT / DISPLAY MODES =====
 % When true: save all PNGs without showing figure windows (batch export mode).

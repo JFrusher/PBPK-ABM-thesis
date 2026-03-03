@@ -28,7 +28,7 @@ CD8_T_cell,oxygen,increases,cycle entry,0.0001,15.0,2,0
 CD8_T_cell,oxygen,decreases,apoptosis,0.00005,5.0,2,0
 CD8_T_cell,pressure,increases,apoptosis,0.00015,0.0008,3,0
 CD8_T_cell,contact with live cell,decreases,cycle entry,0.7,4,2,0
-M2_macrophage,oxygen,decreases,cycle entry,0.0002,10.0,2,0
+M2_macrophage,oxygen,increases,cycle entry,0.0002,10.0,2,0
 M2_macrophage,oxygen,decreases,apoptosis,0.00002,2.0,2,0
 M2_macrophage,pressure,increases,apoptosis,0.00005,0.001,2,0
 M2_macrophage,contact with live cell,decreases,cycle entry,0.8,5,2,0

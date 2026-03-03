@@ -52,3 +52,7 @@ slurm-*.out
 *.zip
 output/
 MC_results/
+*.log
+
+# Always track everything in config/
+!/config/**

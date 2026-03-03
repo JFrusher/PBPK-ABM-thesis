@@ -24,11 +24,31 @@ Studio.zip
 # PhysiCell specific ignores
 output/
 config/*.xml
-*.mat
 *.svg
-*.png
 bin/
 *.o
 PhysiCell
 # General HPC ignores
 slurm-*.out
+*.csv
+/*
+!/core/
+!/config/
+!/custom_modules/
+!/beta/
+!/Makefile
+!*.cpp
+!*.h
+!*.m
+!*.sh
+!/main.cpp
+!/main-backup.cpp
+!/.gitignore
+
+# Explicitly ban the heavy stuff just in case
+*.csv
+*.fig
+*.mat
+*.zip
+output/
+MC_results/

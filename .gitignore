@@ -21,3 +21,14 @@ user_projects/*
 !user_projects/empty.txt
 Studio.zip
 /studio
+# PhysiCell specific ignores
+output/
+config/*.xml
+*.mat
+*.svg
+*.png
+bin/
+*.o
+PhysiCell
+# General HPC ignores
+slurm-*.out

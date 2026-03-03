@@ -1254,7 +1254,20 @@ void split_csv( std::string input , std::vector<std::string>& output , char deli
 	std::istringstream is(input);
 	std::string part;
 	while( getline(is, part, delim ) )
-	{ output.push_back(part); }
+	{
+		// Trim leading/trailing whitespace and CRLF artifacts
+		size_t first = part.find_first_not_of(" \t\r\n");
+		if( first == std::string::npos )
+		{
+			part.clear();
+		}
+		else
+		{
+			size_t last = part.find_last_not_of(" \t\r\n");
+			part = part.substr(first, last - first + 1);
+		}
+		output.push_back(part);
+	}
 
 	return; 
 }

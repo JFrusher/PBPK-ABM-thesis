@@ -1677,7 +1677,7 @@
     <initial_conditions>
         <cell_positions type="csv" enabled="true">
             <folder>./config</folder>
-            <filename>colorectal_tumor_cells_with_caf.csv</filename>
+            <filename>cells_fixed.csv</filename>
         </cell_positions>
     </initial_conditions>
 

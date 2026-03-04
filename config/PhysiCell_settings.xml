@@ -52,7 +52,7 @@
         <legacy_random_points_on_sphere_in_divide>false</legacy_random_points_on_sphere_in_divide>
         <virtual_wall_at_domain_edge>true</virtual_wall_at_domain_edge>
         <disable_automated_spring_adhesions>false</disable_automated_spring_adhesions>
-        <random_seed>0</random_seed>
+        <random_seed>4316</random_seed>
     </options>
 
     <microenvironment_setup>
@@ -1677,7 +1677,7 @@
     <initial_conditions>
         <cell_positions type="csv" enabled="true">
             <folder>./config</folder>
-            <filename>colorectal_tumor_cells.csv</filename>
+            <filename>colorectal_tumor_cells_with_caf.csv</filename>
         </cell_positions>
     </initial_conditions>
 

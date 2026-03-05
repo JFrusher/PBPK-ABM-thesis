@@ -76,6 +76,7 @@
 #include <iomanip>
 #include <cstdlib>
 #include <atomic>
+#include <unordered_map>
 
 namespace damage_params {
     double base_damage_rate = 0.001;          // Damage per uM drug per minute
@@ -992,12 +993,7 @@ void monitor_oxygenation( void )
     int oxygen_index = microenvironment.find_density_index("oxygen");
     int glucose_index = microenvironment.find_density_index("glucose");
 
-    if( oxygen_index < 0 && glucose_index < 0 )
-    {
-        std::cout << "[ENV t=" << PhysiCell_globals.current_time
-                  << " min] oxygen/glucose substrates not found" << std::endl;
-        return;
-    }
+    double current_time = PhysiCell_globals.current_time;
 
     double min_oxygen = 9e99;
     double max_oxygen = -9e99;
@@ -1010,7 +1006,8 @@ void monitor_oxygenation( void )
     int n_vox = microenvironment.number_of_voxels();
     if( n_vox <= 0 )
     {
-        std::cout << "[ENV t=" << PhysiCell_globals.current_time << " min] no voxels" << std::endl;
+        std::cout << "[DIAG t=" << std::fixed << std::setprecision(1) << current_time
+                  << " min] no voxels available" << std::endl;
         return;
     }
 
@@ -1033,32 +1030,98 @@ void monitor_oxygenation( void )
         }
     }
 
-    std::cout << "[ENV t=" << std::fixed << std::setprecision(1) << PhysiCell_globals.current_time << " min] ";
+    double avg_oxygen = (oxygen_index >= 0) ? (sum_oxygen / n_vox) : 0.0;
+    double avg_glucose = (glucose_index >= 0) ? (sum_glucose / n_vox) : 0.0;
+
+    std::unordered_map<int, int> type_counts;
+    int total_cells = 0;
+    int alive_cells = 0;
+    int dead_cells = 0;
+    int apoptotic_cells = 0;
+    int necrotic_cells = 0;
+
+    for( Cell* pCell : *all_cells )
+    {
+        if( pCell == NULL )
+        { continue; }
+
+        total_cells++;
+        type_counts[pCell->type]++;
+
+        if( pCell->phenotype.death.dead )
+        {
+            dead_cells++;
+            int death_model = pCell->phenotype.death.current_death_model_index;
+            if( death_model == PhysiCell_constants::apoptosis_death_model )
+            { apoptotic_cells++; }
+            if( death_model == PhysiCell_constants::necrosis_death_model )
+            { necrotic_cells++; }
+        }
+        else
+        {
+            alive_cells++;
+        }
+    }
+
+    std::ostringstream type_summary;
+    bool first_type = true;
+    for( int i = 0; i < cell_definitions_by_type.size(); i++ )
+    {
+        auto* pDef = cell_definitions_by_type[i];
+        if( pDef == NULL )
+        { continue; }
+
+        if( !first_type )
+        { type_summary << " | "; }
+        first_type = false;
+        type_summary << pDef->name << "=" << type_counts[pDef->type];
+    }
+
+    if( first_type )
+    { type_summary << "n/a"; }
+
+    double C_5FU = get_concentration_at_time(pk_profiles::concentration_5FU, current_time);
+    double C_FdUMP = get_concentration_at_time(pk_profiles::concentration_FdUMP, current_time);
+    double C_FdUTP = get_concentration_at_time(pk_profiles::concentration_FdUTP, current_time);
+    double C_FUTP = get_concentration_at_time(pk_profiles::concentration_FUTP, current_time);
+
+    std::cout << "\n[DIAG t=" << std::fixed << std::setprecision(1) << current_time << " min]"
+              << "------------------------------------------------------------" << std::endl;
+
+    std::cout << "  ENV   | vox=" << n_vox;
     if( oxygen_index >= 0 )
     {
-        std::cout << "O2(min=" << std::setprecision(4) << min_oxygen
-                  << ", max=" << max_oxygen
-                  << ", avg=" << (sum_oxygen / n_vox) << ")";
+        std::cout << " | O2[min/avg/max]=" << std::setprecision(4)
+                  << min_oxygen << "/" << avg_oxygen << "/" << max_oxygen;
     }
     else
     {
-        std::cout << "O2(n/a)";
+        std::cout << " | O2=n/a";
     }
-
-    std::cout << " | ";
 
     if( glucose_index >= 0 )
     {
-        std::cout << "Glucose(min=" << min_glucose
-                  << ", max=" << max_glucose
-                  << ", avg=" << (sum_glucose / n_vox) << ")";
+        std::cout << " | Glucose[min/avg/max]="
+                  << min_glucose << "/" << avg_glucose << "/" << max_glucose;
     }
     else
     {
-        std::cout << "Glucose(n/a)";
+        std::cout << " | Glucose=n/a";
     }
-
     std::cout << std::endl;
+
+    std::cout << "  PK    | 5FU=" << C_5FU
+              << " | FdUMP=" << C_FdUMP
+              << " | FdUTP=" << C_FdUTP
+              << " | FUTP=" << C_FUTP << std::endl;
+
+    std::cout << "  CELLS | total=" << total_cells
+              << " | alive=" << alive_cells
+              << " | dead=" << dead_cells
+              << " | apoptotic=" << apoptotic_cells
+              << " | necrotic=" << necrotic_cells << std::endl;
+
+    std::cout << "  TYPES | " << type_summary.str() << std::endl;
 }
 
 // Return whether the model should remain in diffusion-only warmup mode.
@@ -1119,13 +1182,9 @@ void custom_function( Cell* pCell, Phenotype& phenotype , double dt )
         update_microenvironment_from_pk(current_time);
     }
 
-    // Emit environmental diagnostics every 60 simulated minutes,
-    // independent of full-save settings.
-    int current_block = static_cast<int>( current_time / 60.0 );
-    static std::atomic<int> last_monitor_block(-1);
-    int seen_block = last_monitor_block.load();
-    if( current_block > seen_block &&
-        last_monitor_block.compare_exchange_strong(seen_block, current_block) )
+    // Emit diagnostics once per simulation timestep.
+    static std::atomic<long long> last_monitor_stamp_ms(-1);
+    if( last_monitor_stamp_ms.exchange(current_stamp_ms) != current_stamp_ms )
     {
         monitor_oxygenation();
     }

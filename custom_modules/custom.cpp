@@ -1182,9 +1182,12 @@ void custom_function( Cell* pCell, Phenotype& phenotype , double dt )
         update_microenvironment_from_pk(current_time);
     }
 
-    // Emit diagnostics once per simulation timestep.
-    static std::atomic<long long> last_monitor_stamp_ms(-1);
-    if( last_monitor_stamp_ms.exchange(current_stamp_ms) != current_stamp_ms )
+    // Emit diagnostics every 60 simulated minutes.
+    int current_block = static_cast<int>( current_time / 60.0 );
+    static std::atomic<int> last_monitor_block(-1);
+    int seen_block = last_monitor_block.load();
+    if( current_block > seen_block &&
+        last_monitor_block.compare_exchange_strong(seen_block, current_block) )
     {
         monitor_oxygenation();
     }

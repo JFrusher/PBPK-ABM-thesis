@@ -42,6 +42,7 @@ slurm-*.out
 !*.m
 !*.sh
 !*.py
+!config/*.csv
 !/main.cpp
 !/main-backup.cpp
 !/.gitignore

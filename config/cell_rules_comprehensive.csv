@@ -1,38 +1,38 @@
-cell_type            , signal             , direction, behavior           , max_rate, half_max, hill_coefficient, min_rate
-Cancer_stem          , 5FU                , decreases, cycle_entry        ,    0.001,      5.0,              1.8,      0.0
-Cancer_stem          , 5FU                , increases, apoptosis          ,    0.008,      5.0,              1.8,      0.0
-Cancer_stem          , 5FU                , increases, stemness_activation,    0.5  ,     10.0,              2.0,      0.0
-Cancer_stem          , oxygen             , decreases, cycle_entry        ,    0.001,     30.0,              1.8,      0.0
-Cancer_stem          , oxygen             , increases, apoptosis          ,    0.01 ,     10.0,              1.5,      0.0
-Cancer_stem          , glucose            , increases, cycle_entry        ,    0.001,      2.0,              1.0,      0.0
-Cancer_stem          , lactate            , decreases, cycle_entry        ,    0.001,     20.0,              1.5,      0.0
-Cancer_stem          , pressure           , decreases, cycle_entry        ,    0.001,      0.6,             99.0,      0.0
-cancer_proliferating , 5FU                , increases, apoptosis          ,    0.05 ,      2.0,              2.2,      0.0
-cancer_proliferating , 5FU                , decreases, cycle_entry        ,    0.0  ,      1.0,              1.6,      0.0
-cancer_proliferating , 5FU                , increases, lactate_secretion  ,    0.3  ,      5.0,              1.5,      0.1
-cancer_proliferating , oxygen             , increases, lactate_secretion  ,    0.1  ,     20.0,              1.2,      0.0
-cancer_proliferating , oxygen             , increases, cycle_entry        ,    0.0  ,     50.0,              2.0,      0.0
-cancer_proliferating , oxygen             , increases, apoptosis          ,    0.002,     10.0,              1.5,      0.0
-cancer_proliferating , glucose            , increases, cycle_entry        ,    0.0  ,      1.5,              1.0,      0.0
-cancer_proliferating , pressure           , decreases, cycle_entry        ,    0.0  ,      0.6,             99.0,      0.0
-cancer_differentiated, 5FU                , increases, apoptosis          ,    0.03 ,      4.0,              2.0,      0.0
-cancer_differentiated, 5FU                , increases, stemness_activation,    0.1  ,     10.0,              1.5,      0.0
-cancer_differentiated, oxygen             , increases, cycle_entry        ,    0.0  ,     45.0,              1.9,      0.0
-cancer_differentiated, oxygen             , increases, apoptosis          ,    0.002,     10.0,              1.5,      0.0
-cancer_differentiated, glucose            , increases, cycle_entry        ,    0.0  ,      1.5,              1.0,      0.0
-cancer_differentiated, pressure           , decreases, cycle_entry        ,    0.0  ,      0.6,             99.0,      0.0
-CD8_T_cell           , 5FU                , increases, infiltration_rate  ,    0.2  ,      5.0,              1.8,      0.0
-CD8_T_cell           , il2                , increases, cytotoxicity_rate  ,    0.5  ,    100.0,              2.0,      0.0
-CD8_T_cell           , pd1_ligand_burden  , decreases, cytotoxicity_rate  ,    0.5  ,      0.5,              2.0,      0.0
-CD8_T_cell           , ifngamma_production, increases, cytotoxicity_rate  ,  100.0  ,     50.0,              1.5,      0.0
-CD8_T_cell           , oxygen             , increases, apoptosis          ,    0.002,     10.0,              1.5,      0.0
-M2_macrophage        , 5FU                , decreases, M2_polarization    ,    0.05 ,     10.0,              1.5,      0.0
-M2_macrophage        , 5FU                , increases, apoptosis          ,    0.1  ,      5.0,              2.0,      0.0
-M2_macrophage        , lactate            , increases, migration_speed    ,   20.0  ,     20.0,              1.5,      8.0
-M2_macrophage        , oxygen             , increases, migration_speed    ,   20.0  ,     20.0,              1.2,      8.0
-M2_macrophage        , oxygen             , increases, apoptosis          ,    0.002,     10.0,              1.5,      0.0
-M2_macrophage        , il10               , increases, migration_speed    ,   20.0  ,     10.0,              1.5,      8.0
-CAF                  , 5FU                , increases, activation         ,    0.05 ,     10.0,              1.5,      0.0
-CAF                  , tgf_beta           , increases, activation         ,    0.1  ,     10.0,              2.0,      0.0
-CAF                  , lactate            , increases, migration_speed    ,   15.0  ,     20.0,              1.5,      5.0
-CAF                  , oxygen             , increases, apoptosis          ,    0.002,     10.0,              1.5,      0.0
+cell_type,signal,direction,behavior,max_rate,half_max,hill_coefficient,min_rate
+Cancer_stem,5FU,decreases,cycle_entry,0.001,5.0,1.8,0.0
+Cancer_stem,5FU,increases,apoptosis,0.008,5.0,1.8,0.0
+Cancer_stem,5FU,increases,stemness_activation,0.5,10.0,2.0,0.0
+Cancer_stem,oxygen,decreases,cycle_entry,0.001,30.0,1.8,0.0
+Cancer_stem,oxygen,increases,apoptosis,0.01,10.0,1.5,0.0
+Cancer_stem,glucose,increases,cycle_entry,0.001,2.0,1.0,0.0
+Cancer_stem,lactate,decreases,cycle_entry,0.001,20.0,1.5,0.0
+Cancer_stem,pressure,decreases,cycle_entry,0.001,0.6,99.0,0.0
+cancer_proliferating,5FU,increases,apoptosis,0.05,2.0,2.2,0.0
+cancer_proliferating,5FU,decreases,cycle_entry,0.0,1.0,1.6,0.0
+cancer_proliferating,5FU,increases,lactate_secretion,0.3,5.0,1.5,0.1
+cancer_proliferating,oxygen,increases,lactate_secretion,0.1,20.0,1.2,0.0
+cancer_proliferating,oxygen,increases,cycle_entry,0.0,50.0,2.0,0.0
+cancer_proliferating,oxygen,increases,apoptosis,0.002,10.0,1.5,0.0
+cancer_proliferating,glucose,increases,cycle_entry,0.0,1.5,1.0,0.0
+cancer_proliferating,pressure,decreases,cycle_entry,0.0,0.6,99.0,0.0
+cancer_differentiated,5FU,increases,apoptosis,0.03,4.0,2.0,0.0
+cancer_differentiated,5FU,increases,stemness_activation,0.1,10.0,1.5,0.0
+cancer_differentiated,oxygen,increases,cycle_entry,0.0,45.0,1.9,0.0
+cancer_differentiated,oxygen,increases,apoptosis,0.002,10.0,1.5,0.0
+cancer_differentiated,glucose,increases,cycle_entry,0.0,1.5,1.0,0.0
+cancer_differentiated,pressure,decreases,cycle_entry,0.0,0.6,99.0,0.0
+CD8_T_cell,5FU,increases,infiltration_rate,0.2,5.0,1.8,0.0
+CD8_T_cell,il2,increases,cytotoxicity_rate,0.5,100.0,2.0,0.0
+CD8_T_cell,pd1_ligand_burden,decreases,cytotoxicity_rate,0.5,0.5,2.0,0.0
+CD8_T_cell,ifngamma_production,increases,cytotoxicity_rate,100.0,50.0,1.5,0.0
+CD8_T_cell,oxygen,increases,apoptosis,0.002,10.0,1.5,0.0
+M2_macrophage,5FU,decreases,M2_polarization,0.05,10.0,1.5,0.0
+M2_macrophage,5FU,increases,apoptosis,0.1,5.0,2.0,0.0
+M2_macrophage,lactate,increases,migration_speed,20.0,20.0,1.5,8.0
+M2_macrophage,oxygen,increases,migration_speed,20.0,20.0,1.2,8.0
+M2_macrophage,oxygen,increases,apoptosis,0.002,10.0,1.5,0.0
+M2_macrophage,il10,increases,migration_speed,20.0,10.0,1.5,8.0
+CAF,5FU,increases,activation,0.05,10.0,1.5,0.0
+CAF,tgf_beta,increases,activation,0.1,10.0,2.0,0.0
+CAF,lactate,increases,migration_speed,15.0,20.0,1.5,5.0
+CAF,oxygen,increases,apoptosis,0.002,10.0,1.5,0.0

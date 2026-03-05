@@ -73,11 +73,12 @@ import importlib.util
 import inspect
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
 import numpy as np
@@ -130,6 +131,99 @@ def resolve_output_files(root: Path) -> list[Path]:
         return (1, path.name)
 
     return sorted(candidates, key=sort_key)
+
+
+def resolve_output_members(zf: ZipFile) -> list[str]:
+    members = [
+        info.filename
+        for info in zf.infolist()
+        if not info.is_dir() and OUTPUT_RE.search(PurePosixPath(info.filename).name)
+    ]
+
+    def sort_key(member: str):
+        match = OUTPUT_RE.search(PurePosixPath(member).name)
+        if match:
+            return (0, int(match.group(1)))
+        return (1, member)
+
+    return sorted(members, key=sort_key)
+
+
+def sample_members(members: list[str], every_nth: int, max_files: int | None) -> list[str]:
+    selected = members[::every_nth]
+    if max_files is not None:
+        selected = selected[:max_files]
+    return selected
+
+
+def zip_member_to_path(root: Path, member: str) -> Path:
+    member_path = PurePosixPath(member)
+    return root.joinpath(*member_path.parts)
+
+
+def members_required_for_selected_xml(zf: ZipFile, selected_xml_members: list[str]) -> list[str]:
+    all_files = [info.filename for info in zf.infolist() if not info.is_dir()]
+    selected_set: set[str] = set()
+
+    selected_by_dir: dict[str, set[str]] = {}
+    for member in selected_xml_members:
+        p = PurePosixPath(member)
+        parent = str(p.parent)
+        selected_by_dir.setdefault(parent, set()).add(p.stem)
+        selected_set.add(member)
+
+    for file_member in all_files:
+        p = PurePosixPath(file_member)
+        parent = str(p.parent)
+        name = p.name
+        name_lower = name.lower()
+
+        if parent not in selected_by_dir:
+            continue
+
+        if file_member in selected_set:
+            continue
+
+        prefixes = selected_by_dir[parent]
+        if any(name.startswith(prefix) for prefix in prefixes):
+            selected_set.add(file_member)
+            continue
+
+        if (
+            name_lower.endswith(".xml")
+            and not name_lower.startswith("output")
+            and not name_lower.startswith("initial")
+            and not name_lower.startswith("final")
+        ):
+            selected_set.add(file_member)
+            continue
+
+        if name_lower in {
+            "physicell_settings.xml",
+            "settings.xml",
+            "config.xml",
+            "initial.xml",
+            "final.xml",
+            "README.txt",
+            "readme.txt",
+        }:
+            selected_set.add(file_member)
+            continue
+
+        if name_lower.startswith("initial_mesh") and name_lower.endswith(".mat"):
+            selected_set.add(file_member)
+
+    return sorted(selected_set)
+
+
+def estimate_members_uncompressed_bytes(zf: ZipFile, members: list[str]) -> int:
+    info_map = {info.filename: info for info in zf.infolist() if not info.is_dir()}
+    return int(sum(info_map[m].file_size for m in members if m in info_map))
+
+
+def free_bytes_for_path(path: Path) -> int:
+    target = path if path.exists() else path.parent
+    return int(shutil.disk_usage(target).free)
 
 
 def safe_value(value):
@@ -642,23 +736,65 @@ def main():
                 print(f"Extracting zip to: {extract_path.resolve()}")
             else:
                 extract_path = Path(temp_context.name)
-                print("Extracting zip...")
+                print("Preparing selective zip extraction...")
 
             with ZipFile(input_path, "r") as zf:
-                zf.extractall(extract_path)
+                xml_members = resolve_output_members(zf)
+                if not xml_members:
+                    raise FileNotFoundError("No output*.xml files found in zip archive.")
+
+                original_count = len(xml_members)
+                selected_xml_members = sample_members(xml_members, args.every_nth, args.max_files)
+                if not selected_xml_members:
+                    raise FileNotFoundError("No output*.xml files selected after sampling settings.")
+
+                members_to_extract = members_required_for_selected_xml(zf, selected_xml_members)
+                required_bytes = estimate_members_uncompressed_bytes(zf, members_to_extract)
+                free_bytes = free_bytes_for_path(extract_path)
+
+                safety_factor = 1.10
+                required_with_buffer = int(required_bytes * safety_factor)
+                if required_with_buffer > free_bytes:
+                    required_gb = required_with_buffer / (1024 ** 3)
+                    free_gb = free_bytes / (1024 ** 3)
+                    raise OSError(
+                        "Insufficient free disk space for extraction. "
+                        f"Need about {required_gb:.2f} GB (includes 10% safety buffer), "
+                        f"but only {free_gb:.2f} GB is free at {extract_path}. "
+                        "Try increasing --every-nth, setting --max-files, using a destination on a larger drive, "
+                        "or omitting --extract-zip-to-folder to use temporary extraction."
+                    )
+
+                print(
+                    f"Extracting {len(members_to_extract)} files needed for {len(selected_xml_members)} sampled XMLs "
+                    f"(every_nth={args.every_nth})..."
+                )
+
+                try:
+                    for member in members_to_extract:
+                        zf.extract(member, extract_path)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == 28:
+                        raise OSError(
+                            "No space left on device during zip extraction. "
+                            "Use fewer files (--every-nth/--max-files), extract to a drive with more space, "
+                            "or clean old extracted folders before retrying."
+                        ) from exc
+                    raise
 
             search_path = extract_path
+            xml_files = [zip_member_to_path(search_path, m) for m in selected_xml_members]
         else:
             search_path = input_path
 
-        xml_files = resolve_output_files(search_path)
-        if not xml_files:
-            raise FileNotFoundError("No output*.xml files found.")
+            xml_files = resolve_output_files(search_path)
+            if not xml_files:
+                raise FileNotFoundError("No output*.xml files found.")
 
-        original_count = len(xml_files)
-        xml_files = sample_xml_files(xml_files, args.every_nth, args.max_files)
-        if not xml_files:
-            raise FileNotFoundError("No output*.xml files selected after sampling settings.")
+            original_count = len(xml_files)
+            xml_files = sample_xml_files(xml_files, args.every_nth, args.max_files)
+            if not xml_files:
+                raise FileNotFoundError("No output*.xml files selected after sampling settings.")
 
         print(f"Found {original_count} output XML files.")
         print(f"Processing {len(xml_files)} file(s) with every_nth={args.every_nth}, workers={args.workers}.")

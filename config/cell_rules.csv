@@ -1,8 +1,8 @@
 Cancer_stem,FdUMP,decreases,cycle entry,0.00005,0.0003,2,0
-cancer_proliferating,FdUMP,decreases,cycle entry,0.0001,0.0004,2,0
+cancer_proliferating,FdUMP,decreases,cycle entry,0.9,0.1,2,0
 cancer_differentiated,FdUMP,decreases,cycle entry,0.00015,0.0005,2,0
 Cancer_stem,FdUMP,increases,apoptosis,0.00001,0.0005,2,0
-cancer_proliferating,FdUMP,increases,apoptosis,0.00005,0.0003,2,0
+cancer_proliferating,FdUMP,increases,apoptosis,0.005,0.1,2,0
 cancer_differentiated,FdUMP,increases,apoptosis,0.0001,0.0002,2,0
 Cancer_stem,FUTP,decreases,cycle entry,0.00002,0.6,2,0
 cancer_proliferating,FUTP,decreases,cycle entry,0.00008,0.4,2,0
@@ -10,28 +10,25 @@ cancer_differentiated,FUTP,decreases,cycle entry,0.0001,0.7,2,0
 Cancer_stem,FUTP,increases,apoptosis,0.000005,1.5,2,0
 cancer_proliferating,FUTP,increases,apoptosis,0.00003,1.0,2,0
 cancer_differentiated,FUTP,increases,apoptosis,0.00005,0.8,2,0
-Cancer_stem,oxygen,decreases,cycle entry,0.000335,10,2,0
-cancer_proliferating,oxygen,decreases,cycle entry,0.0001,10,2,0
-cancer_differentiated,oxygen,decreases,cycle entry,0.00005,10,2,0
+Cancer_stem,oxygen,decreases,cycle entry,0.000335,20,2,0
+cancer_proliferating,oxygen,decreases,cycle entry,0.0001,20,2,0
+cancer_differentiated,oxygen,decreases,cycle entry,0.00005,20,2,0
 Cancer_stem,oxygen,decreases,apoptosis,0.000035,0.0002,2,0
 cancer_proliferating,oxygen,decreases,apoptosis,0.000035,0.00015,2,0
 cancer_differentiated,oxygen,decreases,apoptosis,0.00001,0.0001,2,0
-Cancer_stem,pressure,increases,apoptosis,0.000035,0.0005,2,0
+Cancer_stem,pressure,increases,apoptosis,0.000035,0.05,2,0
 cancer_proliferating,pressure,increases,apoptosis,0.000035,0.0003,2,0
 cancer_differentiated,pressure,increases,apoptosis,0.00001,0.00015,2,0
-cancer_proliferating,pressure,decreases,cycle entry,0.0001,5,2,0
-cancer_differentiated,pressure,decreases,cycle entry,0.0001,5,2,0
-Cancer_stem,contact with live cell,decreases,cycle entry,0.8,3,2,0
-cancer_proliferating,contact with live cell,decreases,cycle entry,0.95,2,2,0
-cancer_differentiated,contact with live cell,decreases,cycle entry,0.5,4,2,0
-CD8_T_cell,oxygen,increases,cycle entry,0.0001,15.0,2,0
+cancer_proliferating,pressure,decreases,cycle entry,0.001,5,2,0
+cancer_differentiated,pressure,decreases,cycle entry,0.001,5,2,0
+Cancer_stem,contact with live cell,decreases,cycle entry,0.99,3,2,0
+cancer_proliferating,contact with live cell,decreases,cycle entry,0.99,2,2,0
+cancer_differentiated,contact with live cell,decreases,cycle entry,0.99,4,2,0
 CD8_T_cell,oxygen,decreases,apoptosis,0.00005,5.0,2,0
 CD8_T_cell,pressure,increases,apoptosis,0.00015,0.0008,3,0
 CD8_T_cell,contact with live cell,decreases,cycle entry,0.7,4,2,0
-M2_macrophage,oxygen,increases,cycle entry,0.0002,10.0,2,0
 M2_macrophage,oxygen,decreases,apoptosis,0.00002,2.0,2,0
 M2_macrophage,pressure,increases,apoptosis,0.00005,0.001,2,0
 M2_macrophage,contact with live cell,decreases,cycle entry,0.8,5,2,0
 CAF,oxygen,decreases,cycle entry,0.00015,8.0,2,0
-CAF,pressure,increases,cycle entry,0.0002,0.0006,2,0
 CAF,contact with live cell,decreases,cycle entry,0.9,6,3,0

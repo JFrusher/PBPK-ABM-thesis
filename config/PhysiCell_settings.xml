@@ -1677,7 +1677,7 @@
     <initial_conditions>
         <cell_positions type="csv" enabled="true">
             <folder>./config</folder>
-            <filename>cells_fixed.csv</filename>
+            <filename>cellsX.csv</filename>
         </cell_positions>
     </initial_conditions>
 

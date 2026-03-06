@@ -46,6 +46,7 @@ Primary output CSVs:
 - `cell_attribute_stats.csv`
 - `microenvironment_stats.csv`
 - `time_aligned_long.csv`
+- `curve_fitter_table.csv`
 - `metadata.csv`
 
 Examples:
@@ -623,6 +624,151 @@ def compute_density(cell_df: pd.DataFrame, domain_dims: tuple[float | None, floa
     return pd.DataFrame(rows)
 
 
+def sanitize_label(value) -> str:
+    text = str(value)
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r"[^0-9A-Za-z_\-.]+", "_", text)
+    return text or "unknown"
+
+
+def merge_time_tables(tables: list[pd.DataFrame]) -> pd.DataFrame:
+    merged = None
+    for table in tables:
+        if table is None or table.empty or "time_min" not in table.columns:
+            continue
+        if merged is None:
+            merged = table.copy()
+        else:
+            merged = merged.merge(table, on="time_min", how="outer")
+
+    if merged is None:
+        return pd.DataFrame(columns=["time_min"])
+
+    return merged.sort_values("time_min").reset_index(drop=True)
+
+
+def build_curve_fitter_table(
+    summary_df: pd.DataFrame,
+    type_df: pd.DataFrame,
+    phase_df: pd.DataFrame,
+    type_phase_df: pd.DataFrame,
+    density_df: pd.DataFrame,
+    spatial_df: pd.DataFrame,
+    region_df: pd.DataFrame,
+    micro_df: pd.DataFrame,
+    attribute_df: pd.DataFrame,
+) -> pd.DataFrame:
+    tables = []
+
+    if not summary_df.empty:
+        summary_cols = [col for col in summary_df.columns if col != "xml_file"]
+        summary_table = (
+            summary_df[summary_cols]
+            .sort_values("time_min")
+            .drop_duplicates(subset=["time_min"], keep="last")
+        )
+        tables.append(summary_table)
+
+    if not type_df.empty:
+        type_table = (
+            type_df.assign(cell_type=type_df["cell_type"].map(sanitize_label))
+            .pivot_table(index="time_min", columns="cell_type", values="count", aggfunc="sum")
+            .add_prefix("type_count__")
+            .reset_index()
+        )
+        tables.append(type_table)
+
+    if not phase_df.empty:
+        phase_table = (
+            phase_df.assign(phase=phase_df["phase"].map(sanitize_label))
+            .pivot_table(index="time_min", columns="phase", values="count", aggfunc="sum")
+            .add_prefix("phase_count__")
+            .reset_index()
+        )
+        tables.append(phase_table)
+
+    if not type_phase_df.empty:
+        tagged = type_phase_df.assign(
+            curve_key=type_phase_df.apply(
+                lambda row: f"{sanitize_label(row['cell_type'])}__{sanitize_label(row['phase'])}", axis=1
+            )
+        )
+        type_phase_table = (
+            tagged.pivot_table(index="time_min", columns="curve_key", values="count", aggfunc="sum")
+            .add_prefix("type_phase_count__")
+            .reset_index()
+        )
+        tables.append(type_phase_table)
+
+    if not density_df.empty:
+        density_table = (
+            density_df.assign(density_source=density_df["density_source"].map(sanitize_label))
+            .pivot_table(index="time_min", columns="density_source", values="density", aggfunc="mean")
+            .add_prefix("density__")
+            .reset_index()
+        )
+        tables.append(density_table)
+
+    if not spatial_df.empty:
+        spatial_type_col = choose_column(spatial_df, TYPE_COLUMNS)
+        if spatial_type_col:
+            metric_cols = [
+                col
+                for col in spatial_df.columns
+                if col not in {"xml_file", "time_min", spatial_type_col}
+            ]
+            for metric in metric_cols:
+                metric_table = (
+                    spatial_df.assign(_cell_type=spatial_df[spatial_type_col].map(sanitize_label))
+                    .pivot_table(index="time_min", columns="_cell_type", values=metric, aggfunc="mean")
+                    .add_prefix(f"{sanitize_label(metric)}__")
+                    .reset_index()
+                )
+                tables.append(metric_table)
+
+    if not region_df.empty and {"cell_type", "region", "count"}.issubset(region_df.columns):
+        tagged = region_df.assign(
+            curve_key=region_df.apply(
+                lambda row: f"{sanitize_label(row['cell_type'])}__{sanitize_label(row['region'])}", axis=1
+            )
+        )
+        region_table = (
+            tagged.pivot_table(index="time_min", columns="curve_key", values="count", aggfunc="sum")
+            .add_prefix("region_count__")
+            .reset_index()
+        )
+        tables.append(region_table)
+
+    if not micro_df.empty and {"substrate"}.issubset(micro_df.columns):
+        stat_cols = [col for col in micro_df.columns if col not in {"xml_file", "time_min", "substrate"}]
+        for stat in stat_cols:
+            stat_table = (
+                micro_df.assign(_substrate=micro_df["substrate"].map(sanitize_label))
+                .pivot_table(index="time_min", columns="_substrate", values=stat, aggfunc="mean")
+                .add_prefix(f"micro_{sanitize_label(stat)}__")
+                .reset_index()
+            )
+            tables.append(stat_table)
+
+    if not attribute_df.empty and {"cell_type", "attribute"}.issubset(attribute_df.columns):
+        stat_cols = [col for col in attribute_df.columns if col not in {"xml_file", "time_min", "cell_type", "attribute"}]
+        if stat_cols:
+            tagged = attribute_df.assign(
+                curve_key=attribute_df.apply(
+                    lambda row: f"{sanitize_label(row['cell_type'])}__{sanitize_label(row['attribute'])}", axis=1
+                )
+            )
+            for stat in stat_cols:
+                stat_table = (
+                    tagged.pivot_table(index="time_min", columns="curve_key", values=stat, aggfunc="mean")
+                    .add_prefix(f"attr_{sanitize_label(stat)}__")
+                    .reset_index()
+                )
+                tables.append(stat_table)
+
+    return merge_time_tables(tables)
+
+
 def format_eta(seconds: float) -> str:
     if seconds < 0 or np.isnan(seconds):
         return "--:--"
@@ -887,6 +1033,17 @@ def main():
     region_df = pd.DataFrame(region_rows)
     attribute_df = pd.DataFrame(attribute_rows)
     density_df = pd.DataFrame(density_rows)
+    curve_fitter_df = build_curve_fitter_table(
+        summary_df,
+        type_df,
+        phase_df,
+        type_phase_df,
+        density_df,
+        spatial_df,
+        region_df,
+        micro_df,
+        attribute_df,
+    )
 
     type_wide_df = pd.DataFrame()
     if not type_df.empty:
@@ -957,6 +1114,7 @@ def main():
     attribute_df.to_csv(out_dir / "cell_attribute_stats.csv", index=False)
     micro_df.to_csv(out_dir / "microenvironment_stats.csv", index=False)
     long_df.to_csv(out_dir / "time_aligned_long.csv", index=False)
+    curve_fitter_df.to_csv(out_dir / "curve_fitter_table.csv", index=False)
     metadata_df.to_csv(out_dir / "metadata.csv", index=False)
 
     print(f"Wrote CSV files to: {out_dir.resolve()}")
@@ -964,3 +1122,38 @@ def main():
 
 if __name__ == "__main__":
     main()
+#xxx#xxx#xxx#xxx
+#my wonderful fiancee charis made fun of me for this not being over 1000 lines so here we go
+
+
+#xxx
+
+#xxx
+
+#xxx
+
+
+#xxx
+
+#xxx
+
+
+#xxx
+
+#xxx
+
+#xxx#xxx#xxx
+#xxx
+
+#xxx#xxx
+
+#xxx#xxx
+
+#xxx
+
+#xxx
+#xxx#xxx#xxx#xxx
+
+
+
+#xxx#xxx#xxx#xxx#xxx#xxx#xxx

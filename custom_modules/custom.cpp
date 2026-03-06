@@ -346,8 +346,8 @@ double get_concentration_at_time(const std::vector<double>& concentrations,
     if( current_time_min <= pk_profiles::time_points.front() )
         return concentrations.front();
     
-    if( current_time_min >= pk_profiles::time_points.back() )
-        return concentrations.back();
+    if( current_time_min > pk_profiles::time_points.back() )
+        return 0.0;
     
     // Linear interpolation
     for( size_t i = 0; i < pk_profiles::time_points.size() - 1; i++ )
@@ -365,7 +365,7 @@ double get_concentration_at_time(const std::vector<double>& concentrations,
         }
     }
     
-    return concentrations.back();
+    return 0.0;
 }
 
 // Update all microenvironment voxels from the loaded PK profiles.

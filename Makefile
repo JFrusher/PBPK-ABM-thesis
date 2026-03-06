@@ -246,7 +246,7 @@ gif:
 	magick convert $(OUTPUT)/s*.svg $(OUTPUT)/out.gif 
 	 
 movie:
-	ffmpeg -r $(FRAMERATE) -f image2 -i $(OUTPUT)/snapshot%08d.jpg -vcodec libx264 -pix_fmt yuv420p -vf "scale=iw-mod(iw,2):ih-mod(ih,2)" -tune animation -crf 15 -movflags +faststart -acodec none $(OUTPUT)/out.mp4
+	ffmpeg -r 24 -f image2 -i output/snapshot%08d.jpg -vcodec libx264 -pix_fmt yuv420p -vf "scale=iw-mod(iw,2):ih-mod(ih,2)" -crf 15 -an output/out.mp4
 # upgrade rules 
 
 SOURCE := PhysiCell_upgrade.zip 

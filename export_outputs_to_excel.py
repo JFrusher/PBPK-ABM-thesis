@@ -47,6 +47,9 @@ Primary output CSVs:
 - `microenvironment_stats.csv`
 - `time_aligned_long.csv`
 - `curve_fitter_table.csv`
+- `curve_fitter_highlights.csv`
+- `curve_fitter_column_dictionary.csv`
+- `curve_fitter_stats_guide.md`
 - `metadata.csv`
 
 Examples:
@@ -769,6 +772,337 @@ def build_curve_fitter_table(
     return merge_time_tables(tables)
 
 
+def _safe_divide(numerator, denominator):
+    num = np.asarray(numerator, dtype=float)
+    den = np.asarray(denominator, dtype=float)
+    out = np.full(num.shape, np.nan, dtype=float)
+    valid = np.isfinite(num) & np.isfinite(den) & (den != 0)
+    out[valid] = num[valid] / den[valid]
+    return out
+
+
+def _finite_diff(time_vals, series_vals):
+    t = np.asarray(time_vals, dtype=float)
+    y = np.asarray(series_vals, dtype=float)
+    out = np.full(y.shape, np.nan, dtype=float)
+    if t.size < 2 or y.size < 2:
+        return out
+    dt = np.diff(t)
+    dy = np.diff(y)
+    valid = np.isfinite(dt) & np.isfinite(dy) & (dt != 0)
+    diffs = np.full(dy.shape, np.nan, dtype=float)
+    diffs[valid] = dy[valid] / dt[valid]
+    out[1:] = diffs
+    return out
+
+
+def _cumulative_trapezoid(time_vals, series_vals):
+    t = np.asarray(time_vals, dtype=float)
+    y = np.asarray(series_vals, dtype=float)
+    out = np.full(y.shape, np.nan, dtype=float)
+    if t.size == 0:
+        return out
+    out[0] = 0.0
+    for i in range(1, len(y)):
+        if not (
+            np.isfinite(t[i])
+            and np.isfinite(t[i - 1])
+            and np.isfinite(y[i])
+            and np.isfinite(y[i - 1])
+        ):
+            out[i] = out[i - 1]
+            continue
+        dt = t[i] - t[i - 1]
+        if dt <= 0:
+            out[i] = out[i - 1]
+            continue
+        out[i] = out[i - 1] + 0.5 * (y[i] + y[i - 1]) * dt
+    return out
+
+
+def _select_columns_with_prefix(df: pd.DataFrame, prefix: str) -> list[str]:
+    return [col for col in df.columns if col.startswith(prefix)]
+
+
+def _sum_columns(df: pd.DataFrame, columns: list[str]) -> np.ndarray:
+    if not columns:
+        return np.zeros(len(df), dtype=float)
+    return df[columns].apply(pd.to_numeric, errors="coerce").sum(axis=1, skipna=True).to_numpy(dtype=float)
+
+
+def _suffix_matches_any(column_name: str, tokens: tuple[str, ...]) -> bool:
+    suffix = column_name.split("__", 1)[-1].lower()
+    return any(token in suffix for token in tokens)
+
+
+def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
+    if curve_df.empty or "time_min" not in curve_df.columns:
+        return pd.DataFrame()
+
+    df = curve_df.sort_values("time_min").drop_duplicates(subset=["time_min"], keep="last").reset_index(drop=True)
+    highlights = pd.DataFrame({"time_min": pd.to_numeric(df["time_min"], errors="coerce")})
+
+    total_cells = pd.to_numeric(df.get("total_cells", pd.Series(np.nan, index=df.index)), errors="coerce").to_numpy(dtype=float)
+    live_cells = pd.to_numeric(df.get("live_cells", pd.Series(np.nan, index=df.index)), errors="coerce").to_numpy(dtype=float)
+    dead_cells = pd.to_numeric(df.get("dead_cells", pd.Series(np.nan, index=df.index)), errors="coerce").to_numpy(dtype=float)
+
+    if np.all(np.isnan(live_cells)) and np.any(np.isfinite(total_cells)) and np.any(np.isfinite(dead_cells)):
+        live_cells = total_cells - dead_cells
+    if np.all(np.isnan(dead_cells)) and np.any(np.isfinite(total_cells)) and np.any(np.isfinite(live_cells)):
+        dead_cells = total_cells - live_cells
+
+    highlights["total_cells"] = total_cells
+    highlights["live_cells"] = live_cells
+    highlights["dead_cells"] = dead_cells
+
+    highlights["live_fraction"] = _safe_divide(live_cells, total_cells)
+    highlights["dead_fraction"] = _safe_divide(dead_cells, total_cells)
+    highlights["dead_to_live_ratio"] = _safe_divide(dead_cells, live_cells)
+
+    t = highlights["time_min"].to_numpy(dtype=float)
+    net_growth = _finite_diff(t, total_cells)
+    live_growth = _finite_diff(t, live_cells)
+    dead_growth = _finite_diff(t, dead_cells)
+
+    highlights["net_growth_cells_per_min"] = net_growth
+    highlights["live_growth_cells_per_min"] = live_growth
+    highlights["dead_growth_cells_per_min"] = dead_growth
+
+    specific_growth_per_min = _safe_divide(net_growth, total_cells)
+    highlights["specific_growth_rate_per_min"] = specific_growth_per_min
+    highlights["specific_growth_rate_per_hour"] = specific_growth_per_min * 60.0
+    highlights["net_growth_percent_per_hour"] = specific_growth_per_min * 100.0 * 60.0
+
+    sgr_h = highlights["specific_growth_rate_per_hour"].to_numpy(dtype=float)
+    doubling_h = np.full(sgr_h.shape, np.nan, dtype=float)
+    halving_h = np.full(sgr_h.shape, np.nan, dtype=float)
+    pos = np.isfinite(sgr_h) & (sgr_h > 0)
+    neg = np.isfinite(sgr_h) & (sgr_h < 0)
+    doubling_h[pos] = np.log(2.0) / sgr_h[pos]
+    halving_h[neg] = np.log(2.0) / np.abs(sgr_h[neg])
+    highlights["doubling_time_hours"] = doubling_h
+    highlights["halving_time_hours"] = halving_h
+
+    if np.any(np.isfinite(total_cells)):
+        first_total = total_cells[np.where(np.isfinite(total_cells))[0][0]]
+    else:
+        first_total = np.nan
+    highlights["total_cells_fold_change_vs_first"] = _safe_divide(total_cells, first_total)
+    highlights["cumulative_net_change_cells"] = total_cells - first_total
+
+    highlights["auc_total_cells_cell_min"] = _cumulative_trapezoid(t, total_cells)
+    highlights["auc_live_cells_cell_min"] = _cumulative_trapezoid(t, live_cells)
+    highlights["auc_dead_cells_cell_min"] = _cumulative_trapezoid(t, dead_cells)
+
+    type_cols = _select_columns_with_prefix(df, "type_count__")
+    if type_cols:
+        cancer_tokens = ("cancer", "stem", "prolif", "differ")
+        stroma_tokens = ("caf", "fibro", "m2", "macro")
+        immune_tokens = ("cd8", "t_cell", "tcell", "immune", "lymph", "nk")
+
+        cancer_cols = [c for c in type_cols if _suffix_matches_any(c, cancer_tokens)]
+        stroma_cols = [c for c in type_cols if _suffix_matches_any(c, stroma_tokens)]
+        immune_cols = [c for c in type_cols if _suffix_matches_any(c, immune_tokens)]
+
+        all_type_total = _sum_columns(df, type_cols)
+        cancer_total = _sum_columns(df, cancer_cols)
+        stroma_total = _sum_columns(df, stroma_cols)
+        immune_total = _sum_columns(df, immune_cols)
+
+        highlights["type_total_cells"] = all_type_total
+        highlights["cancer_like_cells"] = cancer_total
+        highlights["stroma_like_cells"] = stroma_total
+        highlights["immune_like_cells"] = immune_total
+        highlights["cancer_fraction_of_typed_cells"] = _safe_divide(cancer_total, all_type_total)
+        highlights["stroma_fraction_of_typed_cells"] = _safe_divide(stroma_total, all_type_total)
+        highlights["immune_fraction_of_typed_cells"] = _safe_divide(immune_total, all_type_total)
+        highlights["immune_to_cancer_ratio"] = _safe_divide(immune_total, cancer_total)
+        highlights["stroma_to_cancer_ratio"] = _safe_divide(stroma_total, cancer_total)
+        highlights["cancer_like_growth_cells_per_min"] = _finite_diff(t, cancer_total)
+
+    phase_cols = _select_columns_with_prefix(df, "phase_count__")
+    if phase_cols:
+        proliferative_tokens = ("_1", "_2", "_3", "s", "g2", "m", "ki67_g1", "ki67_s", "ki67_g2")
+        quiescent_tokens = ("_0", "g0", "g0_g1", "ki67_g0", "_100")
+        death_tokens = ("_4", "_5", "_14", "apopt", "necrot")
+
+        proliferative_cols = [c for c in phase_cols if _suffix_matches_any(c, proliferative_tokens)]
+        quiescent_cols = [c for c in phase_cols if _suffix_matches_any(c, quiescent_tokens)]
+        death_cols = [c for c in phase_cols if _suffix_matches_any(c, death_tokens)]
+
+        phase_total = _sum_columns(df, phase_cols)
+        proliferative_total = _sum_columns(df, proliferative_cols)
+        quiescent_total = _sum_columns(df, quiescent_cols)
+        death_phase_total = _sum_columns(df, death_cols)
+
+        highlights["phase_total_cells"] = phase_total
+        highlights["proliferative_phase_cells"] = proliferative_total
+        highlights["quiescent_phase_cells"] = quiescent_total
+        highlights["death_phase_cells"] = death_phase_total
+        highlights["proliferative_index"] = _safe_divide(proliferative_total, phase_total)
+        highlights["death_phase_fraction"] = _safe_divide(death_phase_total, phase_total)
+
+    region_cols = _select_columns_with_prefix(df, "region_count__")
+    if region_cols:
+        core_cols = [c for c in region_cols if _suffix_matches_any(c, ("core",))]
+        rim_cols = [c for c in region_cols if _suffix_matches_any(c, ("rim",))]
+        inner_cols = [c for c in region_cols if _suffix_matches_any(c, ("inner",))]
+        outer_cols = [c for c in region_cols if _suffix_matches_any(c, ("outer",))]
+
+        core_total = _sum_columns(df, core_cols)
+        rim_total = _sum_columns(df, rim_cols)
+        inner_total = _sum_columns(df, inner_cols)
+        outer_total = _sum_columns(df, outer_cols)
+
+        highlights["core_region_cells"] = core_total
+        highlights["inner_region_cells"] = inner_total
+        highlights["outer_region_cells"] = outer_total
+        highlights["rim_region_cells"] = rim_total
+        highlights["rim_to_core_ratio"] = _safe_divide(rim_total, core_total)
+        highlights["outer_plus_rim_fraction"] = _safe_divide(outer_total + rim_total, core_total + inner_total + outer_total + rim_total)
+
+    micro_mean_cols = _select_columns_with_prefix(df, "micro_mean__")
+    for col in micro_mean_cols[:3]:
+        safe_suffix = col.replace("micro_mean__", "")
+        values = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+        highlights[f"micro_mean__{safe_suffix}"] = values
+        highlights[f"micro_mean_slope_per_min__{safe_suffix}"] = _finite_diff(t, values)
+
+    return highlights
+
+
+def build_curve_fitter_column_dictionary(curve_df: pd.DataFrame) -> pd.DataFrame:
+    if curve_df.empty:
+        return pd.DataFrame(columns=["column", "category", "description"])
+
+    rows = []
+    for col in curve_df.columns:
+        if col == "time_min":
+            rows.append({"column": col, "category": "time", "description": "Simulation time in minutes."})
+        elif col in {"xml_file", "total_cells", "live_cells", "dead_cells"}:
+            desc_map = {
+                "xml_file": "Source PhysiCell output XML filename.",
+                "total_cells": "Total number of cells at this timestep.",
+                "live_cells": "Number of live cells at this timestep.",
+                "dead_cells": "Number of dead cells at this timestep.",
+            }
+            rows.append({"column": col, "category": "summary", "description": desc_map[col]})
+        elif col.startswith("type_count__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "cell_type", "description": f"Cell count for type '{label}'."})
+        elif col.startswith("phase_count__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "cell_phase", "description": f"Cell count for phase '{label}'."})
+        elif col.startswith("type_phase_count__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "type_phase", "description": f"Joint count for cell-type/phase key '{label}'."})
+        elif col.startswith("density__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "density", "description": f"Population density estimate based on '{label}'."})
+        elif col.startswith("region_count__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "region", "description": f"Count in radial region key '{label}'."})
+        elif col.startswith("micro_"):
+            rows.append({"column": col, "category": "microenvironment", "description": "Microenvironment substrate statistic; format micro_<stat>__<substrate>."})
+        elif col.startswith("attr_"):
+            rows.append({"column": col, "category": "cell_attribute", "description": "Per-type attribute statistic; format attr_<stat>__<celltype>__<attribute>."})
+        else:
+            rows.append({"column": col, "category": "spatial_or_other", "description": "Derived from spatial-by-type stats or other merged table metric."})
+
+    return pd.DataFrame(rows)
+
+
+def build_curve_fitter_stats_markdown(
+    curve_df: pd.DataFrame,
+    highlight_df: pd.DataFrame,
+    dict_df: pd.DataFrame,
+) -> str:
+    total_cols = len(curve_df.columns) if not curve_df.empty else 0
+    total_rows = len(curve_df)
+    category_counts = dict_df["category"].value_counts().sort_values(ascending=False) if not dict_df.empty else pd.Series(dtype=int)
+
+    lines = [
+        "# Curve Fitter Stats Guide",
+        "",
+        "This file explains how to use `curve_fitter_table.csv` and the derived highlight metrics for dissertation writing.",
+        "",
+        "## What this table is",
+        "",
+        "- One row per simulation timepoint (`time_min`).",
+        "- Built by merging summary, type, phase, type-phase, density, spatial, region, microenvironment, and attribute statistics.",
+        f"- Current export size: **{total_rows} rows x {total_cols} columns**.",
+        "",
+        "## High-value variables for dissertation figures",
+        "",
+        "Use `curve_fitter_highlights.csv` first; it is a curated subset with derived kinetics.",
+        "",
+        "Primary trajectory variables:",
+        "- `total_cells`, `live_cells`, `dead_cells`",
+        "- `net_growth_cells_per_min` (same concept as dN/dt used in `matlab_compare_outputs.m`)",
+        "- `specific_growth_rate_per_hour`, `doubling_time_hours`, `halving_time_hours`",
+        "- `live_fraction`, `dead_fraction`, `dead_to_live_ratio`",
+        "",
+        "Composition and phenotype variables:",
+        "- `cancer_like_cells`, `stroma_like_cells`, `immune_like_cells`",
+        "- `cancer_fraction_of_typed_cells`, `immune_to_cancer_ratio`, `stroma_to_cancer_ratio`",
+        "- `proliferative_index`, `death_phase_fraction`",
+        "",
+        "Spatial/ecology variables:",
+        "- `core_region_cells`, `rim_region_cells`, `rim_to_core_ratio`, `outer_plus_rim_fraction`",
+        "- `micro_mean__<substrate>`, `micro_mean_slope_per_min__<substrate>` (first up to 3 substrates)",
+        "",
+        "## Mapping to MATLAB analysis scripts",
+        "",
+        "- `matlab_analyze_outputs.m` and `matlab_compare_outputs.m` plot total/live/dead trajectories, growth rates, type composition, and ring counts.",
+        "- The highlight metrics are designed to mirror those views and add interpretable kinetics (growth %, doubling/halving time, AUC-style burden).",
+        "",
+        "## Full stats categories in this export",
+        "",
+    ]
+
+    if category_counts.empty:
+        lines.append("- No columns available.")
+    else:
+        for category, count in category_counts.items():
+            lines.append(f"- `{category}`: {int(count)} columns")
+
+    lines.extend([
+        "",
+        "## Naming conventions",
+        "",
+        "- `type_count__X`: count of cell type `X` at each time.",
+        "- `phase_count__Y`: count of cell phase `Y` at each time.",
+        "- `type_phase_count__X__Y`: cross-count for type-phase pair.",
+        "- `density__source`: density estimate from domain or bounding-box geometry.",
+        "- `region_count__type__region`: radial region counts (core/inner/outer/rim).",
+        "- `micro_<stat>__substrate`: microenvironment concentration statistics (`mean`, `min`, `max`, `std`, `p10`, `p50`, `p90`).",
+        "- `attr_<stat>__type__attribute`: per-type cell attribute statistics (`mean`, `std`, `min`, `max`).",
+        "",
+        "## Derived growth stats (scientifically relevant additions)",
+        "",
+        "- Finite-difference growth rates (`cells/min`) for total, live, and dead cells.",
+        "- Specific growth rate in `/min` and `/hour` and percent growth per hour.",
+        "- Doubling time (when growth > 0) and halving time (when growth < 0).",
+        "- Cumulative burden metrics: AUC of total/live/dead cell counts over time.",
+        "- Fold-change and cumulative net change relative to first sampled timepoint.",
+        "",
+        "## Practical workflow for writing",
+        "",
+        "1. Start with `curve_fitter_highlights.csv` for figure-level narratives.",
+        "2. Use `curve_fitter_column_dictionary.csv` to decode any unfamiliar column names.",
+        "3. Return to `curve_fitter_table.csv` only when you need high-granularity subgroup metrics.",
+        "",
+        "## Notes",
+        "",
+        "- Fractions/ratios are dimensionless.",
+        "- Growth rates depend on time spacing (`time_min`) and can be noisy for sparse sampling (large `--every-nth`).",
+        "- Cell-type grouping into cancer/stroma/immune uses keyword matching and should be reviewed if naming conventions change.",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
 def format_eta(seconds: float) -> str:
     if seconds < 0 or np.isnan(seconds):
         return "--:--"
@@ -1044,6 +1378,13 @@ def main():
         micro_df,
         attribute_df,
     )
+    curve_fitter_highlights_df = build_curve_fitter_highlights(curve_fitter_df)
+    curve_fitter_dict_df = build_curve_fitter_column_dictionary(curve_fitter_df)
+    curve_fitter_guide_md = build_curve_fitter_stats_markdown(
+        curve_fitter_df,
+        curve_fitter_highlights_df,
+        curve_fitter_dict_df,
+    )
 
     type_wide_df = pd.DataFrame()
     if not type_df.empty:
@@ -1115,7 +1456,11 @@ def main():
     micro_df.to_csv(out_dir / "microenvironment_stats.csv", index=False)
     long_df.to_csv(out_dir / "time_aligned_long.csv", index=False)
     curve_fitter_df.to_csv(out_dir / "curve_fitter_table.csv", index=False)
+    curve_fitter_highlights_df.to_csv(out_dir / "curve_fitter_highlights.csv", index=False)
+    curve_fitter_dict_df.to_csv(out_dir / "curve_fitter_column_dictionary.csv", index=False)
     metadata_df.to_csv(out_dir / "metadata.csv", index=False)
+
+    (out_dir / "curve_fitter_stats_guide.md").write_text(curve_fitter_guide_md, encoding="utf-8")
 
     print(f"Wrote CSV files to: {out_dir.resolve()}")
 

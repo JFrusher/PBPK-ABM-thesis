@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4      # Reduced: 4 is plenty for image/excel work
 #SBATCH --mem=8G               # Increased: Image processing can be RAM-heavy
-#SBATCH --time=00:30:00        # Shortened: 30 mins is usually enough
+#SBATCH --time=02:00:00        # Shortened: 30 mins is usually enough
 
 # 1. Load Environment
 module load python/3.12.4
@@ -27,6 +27,5 @@ echo "Exporting to Excel..."
 python3 export_outputs_to_excel.py --folder output --outdir Sim_results_${SLURM_JOB_ID}_csv
 
 conda deactivate
+make movie
 echo "Post-processing complete."
-
-

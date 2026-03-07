@@ -683,7 +683,7 @@ void setup_tissue( void )
     
     // Read dosing file prefix from environment variable, fallback to default.
     const char* dosing_file_env = std::getenv("DOSING_FILE");
-    std::string dosing_file = (dosing_file_env != nullptr) ? dosing_file_env : "Chronomodulated";
+    std::string dosing_file = (dosing_file_env != nullptr) ? dosing_file_env : "Mayo";
     std::cout << "Using dosing file prefix: " << dosing_file << std::endl;
     load_pk_profiles_multisubstrate(dosing_file);
     

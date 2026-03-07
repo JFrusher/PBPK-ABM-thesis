@@ -239,7 +239,12 @@ jpeg:
 	@expr 2 \* \( $$(grep . __H.txt) / 2 \) > __H1.txt 
 	@expr 2 \* \( $$(grep . __W.txt) / 2 \) > __W1.txt 
 	@echo "$$(grep . __W1.txt)!x$$(grep . __H1.txt)!" > __resize.txt 
-	@magick mogrify -format jpg -resize $$(grep . __resize.txt) $(OUTPUT)/s*.svg
+	@for svg in $(OUTPUT)/s*.svg; do \
+		if [ ! -e "$$svg" ]; then continue; fi; \
+		jpg="$${svg%.svg}.jpg"; \
+		if [ -f "$$jpg" ]; then continue; fi; \
+		magick convert "$$svg" -resize $$(grep . __resize.txt) "$$jpg"; \
+	done
 	rm -f __H*.txt __W*.txt __resize.txt 
 	
 gif: 

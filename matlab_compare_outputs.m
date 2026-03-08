@@ -6,10 +6,10 @@
 % 2) Or call from MATLAB command window:
 %      compare_two_physicell_dirs("physicell_csvs_untreated", "physicell_csvs_treated")
 
-DIR_A = "../Sim_results_6_csv";
-DIR_B = "Sim_results_5_csv";
+DIR_A = "Sim_results_8_csv";
+DIR_B = "Sim_results_7_csv";
 LABEL_A = "Untreated";
-LABEL_B = "Treated With Chrono";
+LABEL_B = "Treated With Mayo";
 OUT_SUBDIR = "comparison_figures_png2";
 HEADLESS_PNG_BATCH_MODE = false;
 DOCK_ALL_FIGURES = true;

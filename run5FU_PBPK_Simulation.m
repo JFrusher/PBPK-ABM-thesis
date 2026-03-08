@@ -514,7 +514,7 @@ function [results] = run5FU_PBPK_Simulation(inputFile, outputPrefix, paramOverri
         end
         
         % Generate simulation end time
-        maxTime = max_dose_end + 180; % +3 hours observation
+        maxTime = max_dose_end + 600; % +10 hours observation
         
         % Build timestep array
         time_min = [];
@@ -1725,13 +1725,25 @@ function dosingRegimen = readDosingRegimen(inputFile)
         error(errorMsg);
     end
     
-    % Validate required columns
-    requiredCols = {'start_time_min', 'end_time_min', 'dosing_type'};
+    % Validate required columns (support aliases for dosing type)
+    typeCandidates = {'dosing_type','dose_type','doseType','type'};
+    foundType = '';
+    for i = 1:length(typeCandidates)
+        if any(strcmp(dosingRegimen.Properties.VariableNames, typeCandidates{i}))
+            foundType = typeCandidates{i};
+            break;
+        end
+    end
+
+    requiredCols = {'start_time_min', 'end_time_min'};
     missingCols = {};
     for i = 1:length(requiredCols)
         if ~any(strcmp(dosingRegimen.Properties.VariableNames, requiredCols{i}))
             missingCols{end+1} = requiredCols{i};
         end
+    end
+    if isempty(foundType)
+        missingCols{end+1} = 'dosing_type';
     end
     
     if ~isempty(missingCols)
@@ -1744,17 +1756,30 @@ function dosingRegimen = readDosingRegimen(inputFile)
         error(errorMsg);
     end
     
-    % Add missing optional columns with NaN
-    optionalCols = {'dose_amount', 'infusion_rate'};
+    % Standardize dosing type column name
+    if ~strcmp(foundType, 'dosing_type')
+        dosingRegimen.dosing_type = dosingRegimen.(foundType);
+    end
+
+    % Standardize dose amount aliases
+    if any(strcmp(dosingRegimen.Properties.VariableNames, 'dose_mg')) && ~any(strcmp(dosingRegimen.Properties.VariableNames, 'dose_amount'))
+        dosingRegimen.dose_amount = dosingRegimen.dose_mg;
+    end
+
+    % Add missing optional columns with NaN / empty string
+    optionalCols = {'dose_amount', 'infusion_rate', 'mean_rate', 'amplitude', 'frequency_per_min', 'rate_mg_per_min'};
     for i = 1:length(optionalCols)
         if ~any(strcmp(dosingRegimen.Properties.VariableNames, optionalCols{i}))
             dosingRegimen.(optionalCols{i}) = nan(height(dosingRegimen), 1);
         end
     end
+    if ~any(strcmp(dosingRegimen.Properties.VariableNames, 'custom_function'))
+        dosingRegimen.custom_function = repmat({''}, height(dosingRegimen), 1);
+    end
 
     % Coerce numeric columns in case the CSV was read as strings
     numericCols = {'start_time_min', 'end_time_min', 'dose_amount', 'infusion_rate', ...
-                   'mean_rate', 'amplitude', 'frequency_per_min'};
+                   'mean_rate', 'amplitude', 'frequency_per_min', 'rate_mg_per_min'};
     for i = 1:length(numericCols)
         colName = numericCols{i};
         if any(strcmp(dosingRegimen.Properties.VariableNames, colName))
@@ -1765,6 +1790,64 @@ function dosingRegimen = readDosingRegimen(inputFile)
             dosingRegimen.(colName) = col;
         end
     end
+
+    % Normalize dosing_type to lowercase trimmed string
+    dosingRegimen.dosing_type = lower(strtrim(string(dosingRegimen.dosing_type)));
+
+    % Sort by start time for deterministic overlap behavior
+    [~, order] = sort(dosingRegimen.start_time_min, 'ascend');
+    dosingRegimen = dosingRegimen(order, :);
+
+    % Validate time values and create effective dosing windows.
+    n = height(dosingRegimen);
+    effective_end = dosingRegimen.end_time_min;
+    for i = 1:n
+        s = dosingRegimen.start_time_min(i);
+        e = dosingRegimen.end_time_min(i);
+
+        if ~isfinite(s)
+            error('Invalid start_time_min at row %d (non-finite value).', i);
+        end
+        if ~isfinite(e)
+            e = s;
+        end
+
+        if e < s
+            warning('Row %d has end_time_min < start_time_min. Swapping values.', i);
+            tmp = s; s = e; e = tmp;
+            dosingRegimen.start_time_min(i) = s;
+            dosingRegimen.end_time_min(i) = e;
+        end
+
+        type_i = string(dosingRegimen.dosing_type(i));
+        is_bolus = any(contains(type_i, "bolus"));
+        is_nonbolus = any(contains(type_i, ["continuous","constant","infusion","sinusoidal","chrono","custom","step"]));
+
+        % Robust handling for point-style rows (start == end):
+        % - bolus: keep short pulse behavior later in calculateDosingRate
+        % - non-bolus: treat as step that continues until next schedule change
+        if e <= s && is_nonbolus && ~is_bolus
+            nextStart = NaN;
+            if i < n
+                futureStarts = dosingRegimen.start_time_min((i+1):end);
+                futureStarts = futureStarts(futureStarts > s);
+                if ~isempty(futureStarts)
+                    nextStart = min(futureStarts);
+                end
+            end
+
+            if isfinite(nextStart)
+                e = nextStart;
+            else
+                e = s + 1.0; % safe fallback hold duration (1 minute)
+            end
+        end
+
+        effective_end(i) = max(e, s);
+    end
+
+    dosingRegimen.effective_end_time_min = effective_end;
+    dosingRegimen.effective_duration_min = max(dosingRegimen.effective_end_time_min - dosingRegimen.start_time_min, 0);
     
 end
 
@@ -2008,39 +2091,54 @@ function rate = calculateDosingRate(currentTime, dosingRegimen)
 % colorectal cancer." The Lancet, 350(9075), 681-686.
 % 
 % ================================================================================
-    rate = 0; 
-    MW_5FU = 130.08; 
+    rate = 0;
+    MW_5FU = 130.08;
     
     for i = 1:height(dosingRegimen)
         startTime = dosingRegimen.start_time_min(i);
         endTime_raw = dosingRegimen.end_time_min(i);
+        effectiveEnd = endTime_raw;
+        if ismember('effective_end_time_min', dosingRegimen.Properties.VariableNames)
+            effectiveEnd = dosingRegimen.effective_end_time_min(i);
+        end
         
         % Robust string handling
         if iscell(dosingRegimen.dosing_type)
-            dosingType = lower(strtrim(dosingRegimen.dosing_type{i}));
+            dosingType = lower(strtrim(string(dosingRegimen.dosing_type{i})));
         else
             dosingType = lower(strtrim(string(dosingRegimen.dosing_type(i))));
         end
         
         dosingTypeStr = string(dosingType);
-        is_bolus = contains(dosingTypeStr, "bolus");
-        is_constant = contains(dosingTypeStr, ["constant", "continuous", "infusion"]);
-        is_sinusoidal = contains(dosingTypeStr, "sinusoidal");
+        is_bolus = any(contains(dosingTypeStr, "bolus"));
+        is_constant = any(contains(dosingTypeStr, ["constant", "continuous", "infusion", "step"]));
+        is_sinusoidal = any(contains(dosingTypeStr, ["sinusoidal", "chrono", "circadian"]));
+        is_custom = any(contains(dosingTypeStr, ["custom", "function", "piecewise"]));
+
+        % Generic direct rate column support
+        if ismember('rate_mg_per_min', dosingRegimen.Properties.VariableNames)
+            if currentTime >= startTime && currentTime < effectiveEnd
+                directRate = dosingRegimen.rate_mg_per_min(i);
+                if ~isnan(directRate) && isfinite(directRate) && directRate > 0
+                    rate = rate + (directRate * 1000) / MW_5FU;
+                end
+            end
+        end
 
         if is_bolus
             % FIX: Calculate duration FIRST to handle 0-length boluses
             % If start=60, end=60 -> duration=0.1, effectiveEnd=60.1
-            duration = max(endTime_raw - startTime, 0.1);
+            duration = max(effectiveEnd - startTime, 0.1);
             effectiveEndTime = startTime + duration;
 
             % Check against EFFECTIVE window
             if currentTime >= startTime && currentTime < effectiveEndTime
                 % Get dose in mg (with column detection)
                 dose_mg = NaN;
-                if ismember('dose_mg', dosingRegimen.Properties.VariableNames)
-                    dose_mg = dosingRegimen.dose_mg(i);
-                elseif ismember('dose_amount', dosingRegimen.Properties.VariableNames)
+                if ismember('dose_amount', dosingRegimen.Properties.VariableNames)
                     dose_mg = dosingRegimen.dose_amount(i);
+                elseif ismember('dose_mg', dosingRegimen.Properties.VariableNames)
+                    dose_mg = dosingRegimen.dose_mg(i);
                 end
 
                 % Validate and Add
@@ -2054,18 +2152,24 @@ function rate = calculateDosingRate(currentTime, dosingRegimen)
         end
 
         if is_constant
-            if currentTime >= startTime && currentTime <= endTime_raw
+            if currentTime >= startTime && currentTime < effectiveEnd
                 rate_mg_per_min = dosingRegimen.infusion_rate(i);
                 if isnan(rate_mg_per_min)
                     dose_mg = NaN;
-                    if ismember('dose_mg', dosingRegimen.Properties.VariableNames)
-                        dose_mg = dosingRegimen.dose_mg(i);
-                    elseif ismember('dose_amount', dosingRegimen.Properties.VariableNames)
+                    if ismember('dose_amount', dosingRegimen.Properties.VariableNames)
                         dose_mg = dosingRegimen.dose_amount(i);
+                    elseif ismember('dose_mg', dosingRegimen.Properties.VariableNames)
+                        dose_mg = dosingRegimen.dose_mg(i);
                     end
-                    duration = endTime_raw - startTime;
+                    duration = effectiveEnd - startTime;
                     if ~isnan(dose_mg) && dose_mg > 0 && duration > 0
                         rate_mg_per_min = dose_mg / duration;
+                    end
+                end
+                if isnan(rate_mg_per_min) && ismember('mean_rate', dosingRegimen.Properties.VariableNames)
+                    mr = dosingRegimen.mean_rate(i);
+                    if isfinite(mr) && ~isnan(mr)
+                        rate_mg_per_min = mr;
                     end
                 end
                 if ~isnan(rate_mg_per_min)
@@ -2075,15 +2179,55 @@ function rate = calculateDosingRate(currentTime, dosingRegimen)
         end
 
         if is_sinusoidal
-            if currentTime >= startTime && currentTime <= endTime_raw
+            if currentTime >= startTime && currentTime < effectiveEnd
                 mean_rate = dosingRegimen.mean_rate(i);
                 amplitude = dosingRegimen.amplitude(i);
                 frequency = dosingRegimen.frequency_per_min(i);
+
+                if isnan(mean_rate) && ismember('infusion_rate', dosingRegimen.Properties.VariableNames)
+                    mean_rate = dosingRegimen.infusion_rate(i);
+                end
+                if isnan(amplitude)
+                    amplitude = 0;
+                end
+                if isnan(frequency) || frequency <= 0
+                    period = max(effectiveEnd - startTime, 1.0);
+                    frequency = 1 / period;
+                end
 
                 rate_mg_per_min = mean_rate + amplitude * sin(2 * pi * frequency * currentTime);
                 rate_mg_per_min = max(rate_mg_per_min, 0);
 
                 rate = rate + (rate_mg_per_min / MW_5FU) * 1000;
+            end
+        end
+
+        if is_custom
+            if currentTime >= startTime && currentTime < effectiveEnd
+                customRate = NaN;
+                if ismember('custom_function', dosingRegimen.Properties.VariableNames)
+                    exprRaw = dosingRegimen.custom_function(i);
+                    expr = strtrim(string(exprRaw));
+                    if strlength(expr) > 0
+                        try
+                            fn = str2func(['@(t)' char(expr)]);
+                            customRate = fn(currentTime);
+                        catch
+                            customRate = NaN;
+                        end
+                    end
+                end
+
+                if isnan(customRate)
+                    if ismember('infusion_rate', dosingRegimen.Properties.VariableNames)
+                        customRate = dosingRegimen.infusion_rate(i);
+                    end
+                end
+
+                if ~isnan(customRate) && isfinite(customRate)
+                    customRate = max(customRate, 0);
+                    rate = rate + (customRate / MW_5FU) * 1000;
+                end
             end
         end
     end

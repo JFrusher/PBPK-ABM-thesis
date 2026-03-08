@@ -34,7 +34,8 @@ Flags:
     Skip expensive microenvironment, spatial, and attribute stats for faster runtime.
 - `--skip-initial-minutes M`
     Drop rows with `time_min < M` from all output tables, then rebase remaining
-    time so `time_min` starts at 0. Useful for removing warm-up periods.
+    time and shift the earliest point to a tiny positive value (to avoid exactly
+    zero in downstream curve fitting). Useful for removing warm-up periods.
 
 Primary output CSVs:
 - `summary_by_time.csv`
@@ -123,6 +124,8 @@ OUTPUT_RE = re.compile(r"output(\d+)\.xml$", re.IGNORECASE)
 TYPE_COLUMNS = ["cell_type_name", "cell_type"]
 PHASE_COLUMNS = ["cycle_phase", "current_phase", "phase", "state"]
 POSITION_COLUMNS = ["position_x", "position_y", "position_z"]
+MAX_RADIAL_RINGS = 250
+TIME_MIN_START_POSITIVE = 1e-9
 
 _WORKER_PYMCDS = None
 _WORKER_CONSTRUCTOR_MODE = None
@@ -566,20 +569,53 @@ def compute_spatial_stats(cell_df: pd.DataFrame, type_col: str) -> tuple[pd.Data
 
     spatial_stats = pd.concat([stats, radius_stats], axis=1).reset_index()
 
+    overall_row = {
+        type_col: "overall",
+        "position_x_mean": safe_value(cell_df["position_x"].mean()),
+        "position_x_std": safe_value(cell_df["position_x"].std()),
+        "position_y_mean": safe_value(cell_df["position_y"].mean()),
+        "position_y_std": safe_value(cell_df["position_y"].std()),
+        "radius_mean": safe_value(cell_df["radius"].mean()),
+        "radius_std": safe_value(cell_df["radius"].std()),
+        "radius_min": safe_value(cell_df["radius"].min()),
+        "radius_max": safe_value(cell_df["radius"].max()),
+    }
+    if has_z:
+        overall_row["position_z_mean"] = safe_value(cell_df["position_z"].mean())
+        overall_row["position_z_std"] = safe_value(cell_df["position_z"].std())
+
+    spatial_stats = pd.concat([spatial_stats, pd.DataFrame([overall_row])], ignore_index=True)
+
+    if len(cell_df) == 0:
+        return spatial_stats, pd.DataFrame(columns=[type_col, "region", "count"])
+
     r_max = float(r.max()) if len(r) else 0.0
     if r_max <= 0:
-        cell_df["region"] = "core"
+        ring_index = np.ones(len(cell_df), dtype=int)
     else:
-        frac = r / r_max
-        bins = [0.0, 0.25, 0.5, 0.75, 1.0]
-        labels = ["core", "inner", "outer", "rim"]
-        cell_df["region"] = pd.cut(frac, bins=bins, labels=labels, include_lowest=True)
+        ring_index = np.floor(np.clip((r / r_max).to_numpy(dtype=float), 0.0, 1.0) * MAX_RADIAL_RINGS).astype(int) + 1
+        ring_index = np.clip(ring_index, 1, MAX_RADIAL_RINGS)
 
-    region_counts = (
-        cell_df.groupby([type_col, "region"], dropna=False, observed=False)
-        .size()
-        .reset_index(name="count")
+    cell_df["ring_index"] = ring_index
+
+    ring_totals = pd.Series(ring_index).value_counts().reindex(range(1, MAX_RADIAL_RINGS + 1), fill_value=0)
+    zero_rings = ring_totals[ring_totals == 0]
+    if zero_rings.empty:
+        cutoff_ring = MAX_RADIAL_RINGS
+    else:
+        cutoff_ring = int(zero_rings.index[0])
+
+    cell_df = cell_df[cell_df["ring_index"] <= cutoff_ring].copy()
+
+    grouped = cell_df.groupby([type_col, "ring_index"], dropna=False, observed=False).size()
+    cell_types = pd.Index(cell_df[type_col].drop_duplicates())
+    full_index = pd.MultiIndex.from_product(
+        [cell_types, range(1, cutoff_ring + 1)],
+        names=[type_col, "ring_index"],
     )
+    region_counts = grouped.reindex(full_index, fill_value=0).reset_index(name="count")
+    region_counts["region"] = region_counts["ring_index"].map(lambda idx: f"ring {int(idx)}")
+    region_counts = region_counts[[type_col, "region", "count"]]
     return spatial_stats, region_counts
 
 
@@ -597,7 +633,18 @@ def compute_attribute_stats(cell_df: pd.DataFrame, type_col: str) -> pd.DataFram
     stats = group[numeric_cols].agg(["mean", "std", "min", "max"])
     stats = stats.stack(level=0, future_stack=True).reset_index()
     stats = stats.rename(columns={"level_1": "attribute"})
-    return stats
+
+    overall_stats = (
+        cell_df[numeric_cols]
+        .agg(["mean", "std", "min", "max"])
+        .transpose()
+        .reset_index()
+        .rename(columns={"index": "attribute"})
+    )
+    overall_stats[type_col] = "overall"
+    overall_stats = overall_stats[[type_col, "attribute", "mean", "std", "min", "max"]]
+
+    return pd.concat([stats, overall_stats], ignore_index=True)
 
 
 def compute_density(cell_df: pd.DataFrame, domain_dims: tuple[float | None, float | None, float | None]) -> pd.DataFrame:
@@ -948,22 +995,41 @@ def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
 
     region_cols = _select_columns_with_prefix(df, "region_count__")
     if region_cols:
-        core_cols = [c for c in region_cols if _suffix_matches_any(c, ("core",))]
-        rim_cols = [c for c in region_cols if _suffix_matches_any(c, ("rim",))]
-        inner_cols = [c for c in region_cols if _suffix_matches_any(c, ("inner",))]
-        outer_cols = [c for c in region_cols if _suffix_matches_any(c, ("outer",))]
+        ring_to_columns: dict[int, list[str]] = {}
+        for col in region_cols:
+            match = re.search(r"(?:^|__)ring_(\d+)$", col.lower())
+            if not match:
+                continue
+            ring_idx = int(match.group(1))
+            ring_to_columns.setdefault(ring_idx, []).append(col)
 
-        core_total = _sum_columns(df, core_cols)
-        rim_total = _sum_columns(df, rim_cols)
-        inner_total = _sum_columns(df, inner_cols)
-        outer_total = _sum_columns(df, outer_cols)
+        if ring_to_columns:
+            ordered_rings = sorted(ring_to_columns)
+            ring_totals = {
+                ring_idx: _sum_columns(df, ring_to_columns[ring_idx])
+                for ring_idx in ordered_rings
+            }
+            total_region_cells = _sum_columns(df, region_cols)
 
-        highlights["core_region_cells"] = core_total
-        highlights["inner_region_cells"] = inner_total
-        highlights["outer_region_cells"] = outer_total
-        highlights["rim_region_cells"] = rim_total
-        highlights["rim_to_core_ratio"] = _safe_divide(rim_total, core_total)
-        highlights["outer_plus_rim_fraction"] = _safe_divide(outer_total + rim_total, core_total + inner_total + outer_total + rim_total)
+            first_ring_idx = ordered_rings[0]
+            first_ring_cells = ring_totals[first_ring_idx]
+
+            outermost_ring_index = np.full(len(df), np.nan, dtype=float)
+            outermost_ring_cells = np.full(len(df), np.nan, dtype=float)
+            ordered_ring_idx_arr = np.asarray(ordered_rings, dtype=float)
+            ordered_ring_totals_arr = np.column_stack([ring_totals[idx] for idx in ordered_rings])
+            for i in range(len(df)):
+                vals = ordered_ring_totals_arr[i]
+                occupied = np.isfinite(vals) & (vals > 0)
+                if np.any(occupied):
+                    outermost_ring_index[i] = ordered_ring_idx_arr[occupied][-1]
+                    outermost_ring_cells[i] = vals[occupied][-1]
+
+            highlights["ring_1_cells"] = first_ring_cells
+            highlights["outermost_occupied_ring_index"] = outermost_ring_index
+            highlights["outermost_occupied_ring_cells"] = outermost_ring_cells
+            highlights["outermost_to_ring1_ratio"] = _safe_divide(outermost_ring_cells, first_ring_cells)
+            highlights["outermost_ring_fraction"] = _safe_divide(outermost_ring_cells, total_region_cells)
 
     micro_mean_cols = _select_columns_with_prefix(df, "micro_mean__")
     for col in micro_mean_cols[:3]:
@@ -1052,7 +1118,8 @@ def build_curve_fitter_stats_markdown(
         "- `proliferative_index`, `death_phase_fraction`",
         "",
         "Spatial/ecology variables:",
-        "- `core_region_cells`, `rim_region_cells`, `rim_to_core_ratio`, `outer_plus_rim_fraction`",
+        "- `ring_1_cells`, `outermost_occupied_ring_index`, `outermost_occupied_ring_cells`",
+        "- `outermost_to_ring1_ratio`, `outermost_ring_fraction`",
         "- `micro_mean__<substrate>`, `micro_mean_slope_per_min__<substrate>` (first up to 3 substrates)",
         "",
         "## Mapping to MATLAB analysis scripts",
@@ -1078,7 +1145,7 @@ def build_curve_fitter_stats_markdown(
         "- `phase_count__Y`: count of cell phase `Y` at each time.",
         "- `type_phase_count__X__Y`: cross-count for type-phase pair.",
         "- `density__source`: density estimate from domain or bounding-box geometry.",
-        "- `region_count__type__region`: radial region counts (core/inner/outer/rim).",
+        "- `region_count__type__ring_N`: radial ring counts where rings are labeled as `ring 1`, `ring 2`, ... up to the first empty ring (max 250).",
         "- `micro_<stat>__substrate`: microenvironment concentration statistics (`mean`, `min`, `max`, `std`, `p10`, `p50`, `p90`).",
         "- `attr_<stat>__type__attribute`: per-type cell attribute statistics (`mean`, `std`, `min`, `max`).",
         "",
@@ -1180,6 +1247,22 @@ def trim_and_rebase_time(df: pd.DataFrame, skip_minutes: float) -> pd.DataFrame:
     return out
 
 
+def shift_time_axis_to_positive_start(df: pd.DataFrame, target_start: float = TIME_MIN_START_POSITIVE) -> pd.DataFrame:
+    if df is None or df.empty or "time_min" not in df.columns:
+        return df
+
+    out = df.copy()
+    out["time_min"] = pd.to_numeric(out["time_min"], errors="coerce")
+    finite_times = out.loc[np.isfinite(out["time_min"]), "time_min"]
+    if finite_times.empty:
+        return out
+
+    min_time = float(finite_times.min())
+    shift = float(target_start) - min_time
+    out["time_min"] = out["time_min"] + shift
+    return out
+
+
 def main():
     pyMCDS = load_pyMCDS()
     constructor_mode = resolve_mcds_constructor_mode(pyMCDS)
@@ -1220,7 +1303,7 @@ def main():
         "--skip-initial-minutes",
         type=float,
         default=0.0,
-        help="Drop rows before this time and rebase remaining time_min to start at 0.",
+        help="Drop rows before this time; final export shifts earliest time_min to a tiny positive value.",
     )
 
     args = parser.parse_args()
@@ -1474,6 +1557,20 @@ def main():
                 "No rows remain after --skip-initial-minutes trim. "
                 "Reduce the skip value or verify simulation duration."
             )
+
+    print(
+        f"Shifting timeline so earliest time_min is a tiny positive value ({TIME_MIN_START_POSITIVE:g}) to avoid t<=0 issues in downstream curve fitting."
+    )
+    summary_df = shift_time_axis_to_positive_start(summary_df)
+    type_df = shift_time_axis_to_positive_start(type_df)
+    phase_df = shift_time_axis_to_positive_start(phase_df)
+    type_phase_df = shift_time_axis_to_positive_start(type_phase_df)
+    micro_df = shift_time_axis_to_positive_start(micro_df)
+    spatial_df = shift_time_axis_to_positive_start(spatial_df)
+    region_df = shift_time_axis_to_positive_start(region_df)
+    attribute_df = shift_time_axis_to_positive_start(attribute_df)
+    density_df = shift_time_axis_to_positive_start(density_df)
+
     type_wide_df = pd.DataFrame()
     if not type_df.empty:
         type_wide_df = (
@@ -1528,6 +1625,7 @@ def main():
         {"key": "fast_mode", "value": args.fast_mode},
         {"key": "skip_initial_minutes", "value": args.skip_initial_minutes},
         {"key": "time_rebased_after_skip", "value": args.skip_initial_minutes > 0},
+        {"key": "time_axis_target_start_min", "value": TIME_MIN_START_POSITIVE},
         {"key": "constructor_mode", "value": constructor_mode},
         {"key": "xml_files_selected", "value": len(xml_files)},
         {"key": "xml_files_failed", "value": len(failed_xml_files)},

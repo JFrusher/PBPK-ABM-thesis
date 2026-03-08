@@ -775,9 +775,10 @@ def build_curve_fitter_table(
 def _safe_divide(numerator, denominator):
     num = np.asarray(numerator, dtype=float)
     den = np.asarray(denominator, dtype=float)
-    out = np.full(num.shape, np.nan, dtype=float)
-    valid = np.isfinite(num) & np.isfinite(den) & (den != 0)
-    out[valid] = num[valid] / den[valid]
+    num_b, den_b = np.broadcast_arrays(num, den)
+    out = np.full(num_b.shape, np.nan, dtype=float)
+    valid = np.isfinite(num_b) & np.isfinite(den_b) & (den_b != 0)
+    out[valid] = num_b[valid] / den_b[valid]
     return out
 
 
@@ -1125,6 +1126,41 @@ def render_progress(idx: int, total: int, start_time: float) -> None:
     print(msg, end="\r", file=sys.stdout, flush=True)
 
 
+def append_warning(warnings: list[str], message: str, exc: Exception | None = None) -> None:
+    if exc is None:
+        warnings.append(message)
+        return
+    warnings.append(f"{message}: {exc}")
+
+
+def safe_write_dataframe(df: pd.DataFrame, path: Path, warnings: list[str], label: str, required: bool = False) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        df.to_csv(tmp_path, index=False)
+        tmp_path.replace(path)
+        return True
+    except Exception as exc:
+        append_warning(warnings, f"Failed to write {label} ({path.name})", exc)
+        if required:
+            raise
+        return False
+
+
+def safe_write_text(content: str, path: Path, warnings: list[str], label: str, required: bool = False) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+        return True
+    except Exception as exc:
+        append_warning(warnings, f"Failed to write {label} ({path.name})", exc)
+        if required:
+            raise
+        return False
+
+
 def main():
     pyMCDS = load_pyMCDS()
     constructor_mode = resolve_mcds_constructor_mode(pyMCDS)
@@ -1187,6 +1223,9 @@ def main():
 
     print(f"Starting export from: {input_path}")
     print(f"Writing CSVs to: {out_dir.resolve()}")
+
+    warnings: list[str] = []
+    failed_xml_files: list[str] = []
 
     summary_rows = []
     type_rows = []
@@ -1286,15 +1325,20 @@ def main():
         if args.workers == 1:
             for idx, xml_file in enumerate(xml_files, start=1):
                 render_progress(idx, total_files, start_time)
-                result = _process_xml_file(
-                    pyMCDS,
-                    constructor_mode,
-                    xml_file,
-                    domain_dims,
-                    include_microenv,
-                    include_spatial,
-                    include_attribute,
-                )
+                try:
+                    result = _process_xml_file(
+                        pyMCDS,
+                        constructor_mode,
+                        xml_file,
+                        domain_dims,
+                        include_microenv,
+                        include_spatial,
+                        include_attribute,
+                    )
+                except Exception as exc:
+                    failed_xml_files.append(str(xml_file))
+                    append_warning(warnings, f"Skipping failed XML parse ({xml_file.name})", exc)
+                    continue
 
                 if type_col_used is None and result["type_col"] is not None:
                     type_col_used = result["type_col"]
@@ -1335,7 +1379,13 @@ def main():
                 for future in concurrent.futures.as_completed(futures):
                     completed += 1
                     render_progress(completed, total_files, start_time)
-                    result = future.result()
+                    xml_file = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        failed_xml_files.append(str(xml_file))
+                        append_warning(warnings, f"Skipping failed XML parse ({xml_file.name})", exc)
+                        continue
 
                     if type_col_used is None and result["type_col"] is not None:
                         type_col_used = result["type_col"]
@@ -1358,6 +1408,16 @@ def main():
         if temp_context:
             temp_context.cleanup()
 
+    if not summary_rows:
+        error_msg = (
+            "No timesteps were successfully processed. "
+            "All XML parses failed; see warnings in export_warnings.txt for details."
+        )
+        append_warning(warnings, error_msg)
+        warnings_text = "\n".join(f"- {w}" for w in warnings) + "\n"
+        safe_write_text(warnings_text, out_dir / "export_warnings.txt", warnings, "warnings report")
+        raise RuntimeError(error_msg)
+
     summary_df = pd.DataFrame(summary_rows)
     type_df = pd.DataFrame(type_rows)
     phase_df = pd.DataFrame(phase_rows)
@@ -1367,25 +1427,6 @@ def main():
     region_df = pd.DataFrame(region_rows)
     attribute_df = pd.DataFrame(attribute_rows)
     density_df = pd.DataFrame(density_rows)
-    curve_fitter_df = build_curve_fitter_table(
-        summary_df,
-        type_df,
-        phase_df,
-        type_phase_df,
-        density_df,
-        spatial_df,
-        region_df,
-        micro_df,
-        attribute_df,
-    )
-    curve_fitter_highlights_df = build_curve_fitter_highlights(curve_fitter_df)
-    curve_fitter_dict_df = build_curve_fitter_column_dictionary(curve_fitter_df)
-    curve_fitter_guide_md = build_curve_fitter_stats_markdown(
-        curve_fitter_df,
-        curve_fitter_highlights_df,
-        curve_fitter_dict_df,
-    )
-
     type_wide_df = pd.DataFrame()
     if not type_df.empty:
         type_wide_df = (
@@ -1439,30 +1480,124 @@ def main():
         {"key": "workers", "value": args.workers},
         {"key": "fast_mode", "value": args.fast_mode},
         {"key": "constructor_mode", "value": constructor_mode},
+        {"key": "xml_files_selected", "value": len(xml_files)},
+        {"key": "xml_files_failed", "value": len(failed_xml_files)},
     ]
+
+    if failed_xml_files:
+        metadata_rows.append({"key": "xml_files_failed_list", "value": ";".join(failed_xml_files)})
+
     metadata_df = pd.DataFrame(metadata_rows)
 
     print("Writing CSV files...")
-    summary_df.to_csv(out_dir / "summary_by_time.csv", index=False)
-    density_df.to_csv(out_dir / "density_by_time.csv", index=False)
-    type_df.to_csv(out_dir / "cell_type_counts_long.csv", index=False)
-    phase_df.to_csv(out_dir / "cell_phase_counts_long.csv", index=False)
-    type_phase_df.to_csv(out_dir / "cell_type_phase_counts.csv", index=False)
-    type_wide_df.to_csv(out_dir / "cell_type_counts_wide.csv", index=False)
-    phase_wide_df.to_csv(out_dir / "cell_phase_counts_wide.csv", index=False)
-    spatial_df.to_csv(out_dir / "spatial_stats_by_type.csv", index=False)
-    region_df.to_csv(out_dir / "region_counts.csv", index=False)
-    attribute_df.to_csv(out_dir / "cell_attribute_stats.csv", index=False)
-    micro_df.to_csv(out_dir / "microenvironment_stats.csv", index=False)
-    long_df.to_csv(out_dir / "time_aligned_long.csv", index=False)
-    curve_fitter_df.to_csv(out_dir / "curve_fitter_table.csv", index=False)
-    curve_fitter_highlights_df.to_csv(out_dir / "curve_fitter_highlights.csv", index=False)
-    curve_fitter_dict_df.to_csv(out_dir / "curve_fitter_column_dictionary.csv", index=False)
-    metadata_df.to_csv(out_dir / "metadata.csv", index=False)
+    core_outputs = [
+        (summary_df, "summary_by_time.csv", "summary_by_time", True),
+        (density_df, "density_by_time.csv", "density_by_time", False),
+        (type_df, "cell_type_counts_long.csv", "cell_type_counts_long", False),
+        (phase_df, "cell_phase_counts_long.csv", "cell_phase_counts_long", False),
+        (type_phase_df, "cell_type_phase_counts.csv", "cell_type_phase_counts", False),
+        (type_wide_df, "cell_type_counts_wide.csv", "cell_type_counts_wide", False),
+        (phase_wide_df, "cell_phase_counts_wide.csv", "cell_phase_counts_wide", False),
+        (spatial_df, "spatial_stats_by_type.csv", "spatial_stats_by_type", False),
+        (region_df, "region_counts.csv", "region_counts", False),
+        (attribute_df, "cell_attribute_stats.csv", "cell_attribute_stats", False),
+        (micro_df, "microenvironment_stats.csv", "microenvironment_stats", False),
+        (long_df, "time_aligned_long.csv", "time_aligned_long", False),
+    ]
 
-    (out_dir / "curve_fitter_stats_guide.md").write_text(curve_fitter_guide_md, encoding="utf-8")
+    for df_obj, filename, label, required in core_outputs:
+        safe_write_dataframe(df_obj, out_dir / filename, warnings, label, required=required)
 
-    print(f"Wrote CSV files to: {out_dir.resolve()}")
+    curve_fitter_df = pd.DataFrame()
+    curve_fitter_highlights_df = pd.DataFrame()
+    curve_fitter_dict_df = pd.DataFrame(columns=["column", "category", "description"])
+    curve_fitter_guide_md = ""
+
+    try:
+        curve_fitter_df = build_curve_fitter_table(
+            summary_df,
+            type_df,
+            phase_df,
+            type_phase_df,
+            density_df,
+            spatial_df,
+            region_df,
+            micro_df,
+            attribute_df,
+        )
+    except Exception as exc:
+        append_warning(warnings, "Failed to build curve_fitter_table", exc)
+
+    if not curve_fitter_df.empty:
+        safe_write_dataframe(curve_fitter_df, out_dir / "curve_fitter_table.csv", warnings, "curve_fitter_table")
+
+        try:
+            curve_fitter_highlights_df = build_curve_fitter_highlights(curve_fitter_df)
+            safe_write_dataframe(
+                curve_fitter_highlights_df,
+                out_dir / "curve_fitter_highlights.csv",
+                warnings,
+                "curve_fitter_highlights",
+            )
+        except Exception as exc:
+            append_warning(warnings, "Failed to build/write curve_fitter_highlights", exc)
+
+        try:
+            curve_fitter_dict_df = build_curve_fitter_column_dictionary(curve_fitter_df)
+            safe_write_dataframe(
+                curve_fitter_dict_df,
+                out_dir / "curve_fitter_column_dictionary.csv",
+                warnings,
+                "curve_fitter_column_dictionary",
+            )
+        except Exception as exc:
+            append_warning(warnings, "Failed to build/write curve_fitter_column_dictionary", exc)
+
+        try:
+            curve_fitter_guide_md = build_curve_fitter_stats_markdown(
+                curve_fitter_df,
+                curve_fitter_highlights_df,
+                curve_fitter_dict_df,
+            )
+            safe_write_text(
+                curve_fitter_guide_md,
+                out_dir / "curve_fitter_stats_guide.md",
+                warnings,
+                "curve_fitter_stats_guide",
+            )
+        except Exception as exc:
+            append_warning(warnings, "Failed to build/write curve_fitter_stats_guide", exc)
+    else:
+        append_warning(
+            warnings,
+            "curve_fitter_table.csv was not generated because curve_fitter table build returned empty or failed",
+        )
+
+    metadata_df = pd.concat(
+        [
+            metadata_df,
+            pd.DataFrame(
+                [
+                    {"key": "warning_count", "value": len(warnings)},
+                    {"key": "curve_fitter_table_rows", "value": len(curve_fitter_df)},
+                    {"key": "curve_fitter_highlights_rows", "value": len(curve_fitter_highlights_df)},
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    safe_write_dataframe(metadata_df, out_dir / "metadata.csv", warnings, "metadata", required=True)
+
+    if warnings:
+        warning_lines = ["Export completed with warnings:", ""]
+        warning_lines.extend([f"- {w}" for w in warnings])
+        warning_lines.append("")
+        warning_lines.append("Stack traces are omitted by default for readability.")
+        safe_write_text("\n".join(warning_lines) + "\n", out_dir / "export_warnings.txt", warnings, "warnings report")
+        print(f"Wrote CSV files to: {out_dir.resolve()} (with {len(warnings)} warning(s))")
+        print(f"See warning details: {out_dir / 'export_warnings.txt'}")
+    else:
+        print(f"Wrote CSV files to: {out_dir.resolve()}")
 
 
 if __name__ == "__main__":

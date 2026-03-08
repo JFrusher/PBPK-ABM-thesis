@@ -627,7 +627,7 @@ function [results] = run5FU_PBPK_Simulation(inputFile, outputPrefix, paramOverri
         
         % Generate comprehensive plots
         % Uncomment the next line if you need plots:
-        %generateComprehensivePlots(results, outputPrefix, logger);
+        generateComprehensivePlots(results, outputPrefix, logger);
         
         % Print summary statistics
         printSummaryStatistics(results);

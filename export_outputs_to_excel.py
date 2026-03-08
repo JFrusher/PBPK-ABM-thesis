@@ -32,6 +32,9 @@ Flags:
     Number of parallel worker processes (N >= 1). Use >1 to parse files in parallel.
 - `--fast-mode`
     Skip expensive microenvironment, spatial, and attribute stats for faster runtime.
+- `--skip-initial-minutes M`
+    Drop rows with `time_min < M` from all output tables, then rebase remaining
+    time so `time_min` starts at 0. Useful for removing warm-up periods.
 
 Primary output CSVs:
 - `summary_by_time.csv`
@@ -1161,6 +1164,22 @@ def safe_write_text(content: str, path: Path, warnings: list[str], label: str, r
         return False
 
 
+def trim_and_rebase_time(df: pd.DataFrame, skip_minutes: float) -> pd.DataFrame:
+    if df is None or df.empty or "time_min" not in df.columns:
+        return df
+
+    out = df.copy()
+    out["time_min"] = pd.to_numeric(out["time_min"], errors="coerce")
+    out = out[np.isfinite(out["time_min"])].copy()
+    out = out[out["time_min"] >= skip_minutes].copy()
+    if out.empty:
+        return out
+
+    out["time_min"] = out["time_min"] - skip_minutes
+    out = out.sort_values("time_min").reset_index(drop=True)
+    return out
+
+
 def main():
     pyMCDS = load_pyMCDS()
     constructor_mode = resolve_mcds_constructor_mode(pyMCDS)
@@ -1197,6 +1216,12 @@ def main():
         action="store_true",
         help="Skip expensive microenvironment, spatial, and attribute stats for faster export.",
     )
+    parser.add_argument(
+        "--skip-initial-minutes",
+        type=float,
+        default=0.0,
+        help="Drop rows before this time and rebase remaining time_min to start at 0.",
+    )
 
     args = parser.parse_args()
     if args.every_nth < 1:
@@ -1205,6 +1230,8 @@ def main():
         raise ValueError("--max-files must be >= 1 when provided")
     if args.workers < 1:
         raise ValueError("--workers must be >= 1")
+    if args.skip_initial_minutes < 0:
+        raise ValueError("--skip-initial-minutes must be >= 0")
 
     out_dir = output_dir_name(args.out_dir)
 
@@ -1427,6 +1454,26 @@ def main():
     region_df = pd.DataFrame(region_rows)
     attribute_df = pd.DataFrame(attribute_rows)
     density_df = pd.DataFrame(density_rows)
+
+    if args.skip_initial_minutes > 0:
+        print(
+            f"Applying warm-up trim: dropping time_min < {args.skip_initial_minutes:.3f} and rebasing remaining timeline to 0."
+        )
+        summary_df = trim_and_rebase_time(summary_df, args.skip_initial_minutes)
+        type_df = trim_and_rebase_time(type_df, args.skip_initial_minutes)
+        phase_df = trim_and_rebase_time(phase_df, args.skip_initial_minutes)
+        type_phase_df = trim_and_rebase_time(type_phase_df, args.skip_initial_minutes)
+        micro_df = trim_and_rebase_time(micro_df, args.skip_initial_minutes)
+        spatial_df = trim_and_rebase_time(spatial_df, args.skip_initial_minutes)
+        region_df = trim_and_rebase_time(region_df, args.skip_initial_minutes)
+        attribute_df = trim_and_rebase_time(attribute_df, args.skip_initial_minutes)
+        density_df = trim_and_rebase_time(density_df, args.skip_initial_minutes)
+
+        if summary_df.empty:
+            raise RuntimeError(
+                "No rows remain after --skip-initial-minutes trim. "
+                "Reduce the skip value or verify simulation duration."
+            )
     type_wide_df = pd.DataFrame()
     if not type_df.empty:
         type_wide_df = (
@@ -1479,6 +1526,8 @@ def main():
         {"key": "max_files", "value": args.max_files or ""},
         {"key": "workers", "value": args.workers},
         {"key": "fast_mode", "value": args.fast_mode},
+        {"key": "skip_initial_minutes", "value": args.skip_initial_minutes},
+        {"key": "time_rebased_after_skip", "value": args.skip_initial_minutes > 0},
         {"key": "constructor_mode", "value": constructor_mode},
         {"key": "xml_files_selected", "value": len(xml_files)},
         {"key": "xml_files_failed", "value": len(failed_xml_files)},

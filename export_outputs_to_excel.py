@@ -773,6 +773,29 @@ def _lookup_token(value) -> str:
     return text.strip("_")
 
 
+def _canonical_lookup_token(value) -> str:
+    if pd.isna(value):
+        return ""
+
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+
+    if isinstance(value, (float, np.floating)):
+        if np.isfinite(value) and float(value).is_integer():
+            return str(int(value))
+        return _lookup_token(value)
+
+    text = str(value).strip()
+    try:
+        numeric = float(text)
+        if np.isfinite(numeric) and numeric.is_integer():
+            return str(int(numeric))
+    except Exception:
+        pass
+
+    return _lookup_token(text)
+
+
 CELL_TYPE_TOKEN_TO_LABEL = {
     **{str(cell_id): label for cell_id, label in CELL_TYPE_ID_TO_LABEL.items()},
     **{_lookup_token(label): label for label in CELL_TYPE_LABEL_TO_GROUP},
@@ -787,19 +810,19 @@ PHASE_TOKEN_TO_LABEL = {
 def normalize_cell_type_label(value) -> str:
     if pd.isna(value):
         return "unknown"
-    token = _lookup_token(value)
+    token = _canonical_lookup_token(value)
     return CELL_TYPE_TOKEN_TO_LABEL.get(token, str(value).strip() or "unknown")
 
 
 def normalize_phase_label(value) -> str:
     if pd.isna(value):
         return "unknown"
-    token = _lookup_token(value)
+    token = _canonical_lookup_token(value)
     return PHASE_TOKEN_TO_LABEL.get(token, str(value).strip() or "unknown")
 
 
 def _column_suffix_key(column_name: str) -> str:
-    return _lookup_token(column_name.split("__", 1)[-1])
+    return _canonical_lookup_token(column_name.split("__", 1)[-1])
 
 
 def merge_time_tables(tables: list[pd.DataFrame]) -> pd.DataFrame:

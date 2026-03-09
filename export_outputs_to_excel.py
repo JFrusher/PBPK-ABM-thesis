@@ -127,6 +127,85 @@ POSITION_COLUMNS = ["position_x", "position_y", "position_z"]
 MAX_RADIAL_RINGS = 250
 TIME_MIN_START_POSITIVE = 1e-9
 
+CELL_TYPE_ID_TO_LABEL = {
+    0: "Cancer_stem",
+    1: "cancer_proliferating",
+    2: "cancer_differentiated",
+    3: "CAF",
+    4: "CD8_T_cell",
+    5: "M2_macrophage",
+}
+
+CELL_TYPE_LABEL_TO_GROUP = {
+    "Cancer_stem": "cancer_like",
+    "cancer_proliferating": "cancer_like",
+    "cancer_differentiated": "cancer_like",
+    "CAF": "stroma_like",
+    "CD8_T_cell": "immune_like",
+    "M2_macrophage": "immune_like",
+}
+
+PHASE_ID_TO_LABEL = {
+    0: "Ki67_positive_premitotic",
+    1: "Ki67_positive_postmitotic",
+    2: "Ki67_positive",
+    3: "Ki67_negative",
+    4: "G0G1_phase",
+    5: "G0_phase",
+    6: "G1_phase",
+    7: "G1a_phase",
+    8: "G1b_phase",
+    9: "G1c_phase",
+    10: "S_phase",
+    11: "G2M_phase",
+    12: "G2_phase",
+    13: "M_phase",
+    14: "live",
+    15: "G1pm_phase",
+    16: "G1ps_phase",
+    17: "cycling",
+    18: "quiescent",
+    100: "apoptotic",
+    101: "necrotic_swelling",
+    102: "necrotic_lysed",
+    103: "necrotic",
+    104: "debris",
+    9999: "custom_phase",
+}
+
+PROLIFERATIVE_PHASE_LABELS = {
+    "Ki67_positive_premitotic",
+    "Ki67_positive_postmitotic",
+    "Ki67_positive",
+    "G1_phase",
+    "G1a_phase",
+    "G1b_phase",
+    "G1c_phase",
+    "S_phase",
+    "G2M_phase",
+    "G2_phase",
+    "M_phase",
+    "G1pm_phase",
+    "G1ps_phase",
+    "cycling",
+}
+
+QUIESCENT_PHASE_LABELS = {
+    "Ki67_negative",
+    "G0G1_phase",
+    "G0_phase",
+    "quiescent",
+    "live",
+}
+
+DEATH_PHASE_LABELS = {
+    "apoptotic",
+    "necrotic_swelling",
+    "necrotic_lysed",
+    "necrotic",
+    "debris",
+}
+
 _WORKER_PYMCDS = None
 _WORKER_CONSTRUCTOR_MODE = None
 
@@ -375,26 +454,28 @@ def _process_xml_file(
         summary_row["live_cells"] = int(len(cell_df)) - dead_count
     summary_rows.append(summary_row)
 
-    type_counts = count_by_column(cell_df, type_col)
-    if not type_counts.empty:
+    type_counts = count_by_column(cell_df, type_col) if type_col else pd.DataFrame()
+    if type_col and not type_counts.empty:
+        type_key = type_col
         for _, row in type_counts.iterrows():
             type_rows.append(
                 {
                     "xml_file": xml_name,
                     "time_min": time_min,
-                    "cell_type": safe_value(row[type_col]),
+                    "cell_type": normalize_cell_type_label(safe_value(row[type_key])),
                     "count": int(row["count"]),
                 }
             )
 
-    phase_counts = count_by_column(cell_df, phase_col)
-    if not phase_counts.empty:
+    phase_counts = count_by_column(cell_df, phase_col) if phase_col else pd.DataFrame()
+    if phase_col and not phase_counts.empty:
+        phase_key = phase_col
         for _, row in phase_counts.iterrows():
             phase_rows.append(
                 {
                     "xml_file": xml_name,
                     "time_min": time_min,
-                    "phase": safe_value(row[phase_col]),
+                    "phase": normalize_phase_label(safe_value(row[phase_key])),
                     "count": int(row["count"]),
                 }
             )
@@ -410,8 +491,8 @@ def _process_xml_file(
                 {
                     "xml_file": xml_name,
                     "time_min": time_min,
-                    "cell_type": safe_value(row[type_col]),
-                    "phase": safe_value(row[phase_col]),
+                    "cell_type": normalize_cell_type_label(safe_value(row[type_col])),
+                    "phase": normalize_phase_label(safe_value(row[phase_col])),
                     "count": int(row["count"]),
                 }
             )
@@ -479,9 +560,10 @@ def _worker_process(
     include_attribute: bool,
 ):
     xml_file = Path(xml_file_str)
+    constructor_mode = _WORKER_CONSTRUCTOR_MODE or "unknown"
     return _process_xml_file(
         _WORKER_PYMCDS,
-        _WORKER_CONSTRUCTOR_MODE,
+        constructor_mode,
         xml_file,
         domain_dims,
         include_microenv,
@@ -593,7 +675,8 @@ def compute_spatial_stats(cell_df: pd.DataFrame, type_col: str) -> tuple[pd.Data
     if r_max <= 0:
         ring_index = np.ones(len(cell_df), dtype=int)
     else:
-        ring_index = np.floor(np.clip((r / r_max).to_numpy(dtype=float), 0.0, 1.0) * MAX_RADIAL_RINGS).astype(int) + 1
+        ring_fraction = np.asarray(r / r_max, dtype=float)
+        ring_index = np.floor(np.clip(ring_fraction, 0.0, 1.0) * MAX_RADIAL_RINGS).astype(int) + 1
         ring_index = np.clip(ring_index, 1, MAX_RADIAL_RINGS)
 
     cell_df["ring_index"] = ring_index
@@ -682,6 +765,41 @@ def sanitize_label(value) -> str:
     text = re.sub(r"\s+", "_", text.strip())
     text = re.sub(r"[^0-9A-Za-z_\-.]+", "_", text)
     return text or "unknown"
+
+
+def _lookup_token(value) -> str:
+    text = str(value).strip().lower()
+    text = re.sub(r"[^0-9a-z]+", "_", text)
+    return text.strip("_")
+
+
+CELL_TYPE_TOKEN_TO_LABEL = {
+    **{str(cell_id): label for cell_id, label in CELL_TYPE_ID_TO_LABEL.items()},
+    **{_lookup_token(label): label for label in CELL_TYPE_LABEL_TO_GROUP},
+}
+
+PHASE_TOKEN_TO_LABEL = {
+    **{str(phase_id): label for phase_id, label in PHASE_ID_TO_LABEL.items()},
+    **{_lookup_token(label): label for label in PHASE_ID_TO_LABEL.values()},
+}
+
+
+def normalize_cell_type_label(value) -> str:
+    if pd.isna(value):
+        return "unknown"
+    token = _lookup_token(value)
+    return CELL_TYPE_TOKEN_TO_LABEL.get(token, str(value).strip() or "unknown")
+
+
+def normalize_phase_label(value) -> str:
+    if pd.isna(value):
+        return "unknown"
+    token = _lookup_token(value)
+    return PHASE_TOKEN_TO_LABEL.get(token, str(value).strip() or "unknown")
+
+
+def _column_suffix_key(column_name: str) -> str:
+    return _lookup_token(column_name.split("__", 1)[-1])
 
 
 def merge_time_tables(tables: list[pd.DataFrame]) -> pd.DataFrame:
@@ -947,13 +1065,38 @@ def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
 
     type_cols = _select_columns_with_prefix(df, "type_count__")
     if type_cols:
-        cancer_tokens = ("cancer", "stem", "prolif", "differ")
-        stroma_tokens = ("caf", "fibro", "m2", "macro")
-        immune_tokens = ("cd8", "t_cell", "tcell", "immune", "lymph", "nk")
+        cancer_type_keys = {
+            _lookup_token(label)
+            for label, group in CELL_TYPE_LABEL_TO_GROUP.items()
+            if group == "cancer_like"
+        }
+        stroma_type_keys = {
+            _lookup_token(label)
+            for label, group in CELL_TYPE_LABEL_TO_GROUP.items()
+            if group == "stroma_like"
+        }
+        immune_type_keys = {
+            _lookup_token(label)
+            for label, group in CELL_TYPE_LABEL_TO_GROUP.items()
+            if group == "immune_like"
+        }
 
-        cancer_cols = [c for c in type_cols if _suffix_matches_any(c, cancer_tokens)]
-        stroma_cols = [c for c in type_cols if _suffix_matches_any(c, stroma_tokens)]
-        immune_cols = [c for c in type_cols if _suffix_matches_any(c, immune_tokens)]
+        cancer_tokens = ("cancer", "stem", "prolif", "differ")
+        stroma_tokens = ("caf", "fibro", "stroma")
+        immune_tokens = ("cd8", "t_cell", "tcell", "immune", "lymph", "macrophage", "m2", "nk")
+
+        cancer_cols = [
+            c for c in type_cols
+            if _column_suffix_key(c) in cancer_type_keys or _suffix_matches_any(c, cancer_tokens)
+        ]
+        stroma_cols = [
+            c for c in type_cols
+            if _column_suffix_key(c) in stroma_type_keys or _suffix_matches_any(c, stroma_tokens)
+        ]
+        immune_cols = [
+            c for c in type_cols
+            if _column_suffix_key(c) in immune_type_keys or _suffix_matches_any(c, immune_tokens)
+        ]
 
         all_type_total = _sum_columns(df, type_cols)
         cancer_total = _sum_columns(df, cancer_cols)
@@ -973,13 +1116,26 @@ def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
 
     phase_cols = _select_columns_with_prefix(df, "phase_count__")
     if phase_cols:
-        proliferative_tokens = ("_1", "_2", "_3", "s", "g2", "m", "ki67_g1", "ki67_s", "ki67_g2")
-        quiescent_tokens = ("_0", "g0", "g0_g1", "ki67_g0", "_100")
-        death_tokens = ("_4", "_5", "_14", "apopt", "necrot")
+        proliferative_phase_keys = {_lookup_token(label) for label in PROLIFERATIVE_PHASE_LABELS}
+        quiescent_phase_keys = {_lookup_token(label) for label in QUIESCENT_PHASE_LABELS}
+        death_phase_keys = {_lookup_token(label) for label in DEATH_PHASE_LABELS}
 
-        proliferative_cols = [c for c in phase_cols if _suffix_matches_any(c, proliferative_tokens)]
-        quiescent_cols = [c for c in phase_cols if _suffix_matches_any(c, quiescent_tokens)]
-        death_cols = [c for c in phase_cols if _suffix_matches_any(c, death_tokens)]
+        proliferative_tokens = ("ki67", "g1", "s_phase", "g2", "m_phase", "cycling")
+        quiescent_tokens = ("g0", "quiescent", "ki67_negative", "live")
+        death_tokens = ("apopt", "necrot", "debris")
+
+        proliferative_cols = [
+            c for c in phase_cols
+            if _column_suffix_key(c) in proliferative_phase_keys or _suffix_matches_any(c, proliferative_tokens)
+        ]
+        quiescent_cols = [
+            c for c in phase_cols
+            if _column_suffix_key(c) in quiescent_phase_keys or _suffix_matches_any(c, quiescent_tokens)
+        ]
+        death_cols = [
+            c for c in phase_cols
+            if _column_suffix_key(c) in death_phase_keys or _suffix_matches_any(c, death_tokens)
+        ]
 
         phase_total = _sum_columns(df, phase_cols)
         proliferative_total = _sum_columns(df, proliferative_cols)
@@ -1116,6 +1272,7 @@ def build_curve_fitter_stats_markdown(
         "- `cancer_like_cells`, `stroma_like_cells`, `immune_like_cells`",
         "- `cancer_fraction_of_typed_cells`, `immune_to_cancer_ratio`, `stroma_to_cancer_ratio`",
         "- `proliferative_index`, `death_phase_fraction`",
+        "- Type/phase normalization follows the `PHYSICELL_ID_CHEAT_SHEET.md` IDs and labels when available.",
         "",
         "Spatial/ecology variables:",
         "- `ring_1_cells`, `outermost_occupied_ring_index`, `outermost_occupied_ring_cells`",
@@ -1167,7 +1324,7 @@ def build_curve_fitter_stats_markdown(
         "",
         "- Fractions/ratios are dimensionless.",
         "- Growth rates depend on time spacing (`time_min`) and can be noisy for sparse sampling (large `--every-nth`).",
-        "- Cell-type grouping into cancer/stroma/immune uses keyword matching and should be reviewed if naming conventions change.",
+        "- Cell-type and phase naming/classification use explicit cheat-sheet mappings first, with keyword fallback for unknown labels.",
         "",
     ])
 
@@ -1364,6 +1521,8 @@ def main():
                 extract_path.mkdir(parents=True, exist_ok=True)
                 print(f"Extracting zip to: {extract_path.resolve()}")
             else:
+                if temp_context is None:
+                    raise RuntimeError("Temporary extraction context was not created.")
                 extract_path = Path(temp_context.name)
                 print("Preparing selective zip extraction...")
 

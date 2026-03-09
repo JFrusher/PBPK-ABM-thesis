@@ -3561,20 +3561,24 @@ if ~isfield(results, 'params') || (~isfield(results.params, 'generatePlots') || 
     return;
 end
 
-if ~usejava('desktop')
-    if ~isempty(logger), logger.info('plots_skipped', struct('reason', 'headless_session')); end
-    return;
+has_desktop = usejava('desktop');
+if has_desktop
+    figure_window_style = 'docked';
+    figure_visibility = 'on';
+else
+    figure_window_style = 'normal';
+    figure_visibility = 'off';
+    if ~isempty(logger), logger.info('plotting_headless_mode', struct('note', 'saving_invisible_figures')); end
 end
 
 good_idx = 1:2:length(results.time_hr);
 
 if ~isempty(logger), logger.info('generating_plots', struct('index_count', length(good_idx))); end
 
-% Dock all figures for easier navigation
-set(0, 'DefaultFigureWindowStyle', 'docked');
+set(0, 'DefaultFigureWindowStyle', figure_window_style);
 
 %% Figure 1A: Central 5-FU
-figure('Position', [100, 100, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [100, 100, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_central(good_idx), 'b-', 'LineWidth', 2);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3588,7 +3592,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 1B: Tumor 5-FU (with magnify)
-figure('Position', [120, 120, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [120, 120, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_tumor(good_idx), 'r-', 'LineWidth', 2);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3609,7 +3613,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 1C: Liver + Peripheral 5-FU
-figure('Position', [140, 140, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [140, 140, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_liver(good_idx), 'g-', 'LineWidth', 2);
 hold on;
 plot(results.time_hr(good_idx), results.concentrations.C_peripheral(good_idx), 'm-', 'LineWidth', 2);
@@ -3626,7 +3630,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 1D: Central vs Tumor 5-FU
-figure('Position', [160, 160, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [160, 160, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_central(good_idx), 'b-', 'LineWidth', 1.5);
 hold on;
 plot(results.time_hr(good_idx), results.concentrations.C_tumor(good_idx), 'r-', 'LineWidth', 1.5);
@@ -3643,7 +3647,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 2A: Systemic FdUMP
-figure('Position', [180, 180, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [180, 180, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_FdUMP(good_idx), 'b-', 'LineWidth', 2);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3657,7 +3661,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 2B: Systemic FdUTP
-figure('Position', [200, 200, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [200, 200, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_FdUTP(good_idx), 'r-', 'LineWidth', 2);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3671,7 +3675,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 2C: Systemic FUTP
-figure('Position', [220, 220, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [220, 220, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_FUTP(good_idx), 'g-', 'LineWidth', 2);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3685,7 +3689,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 2D: Tumor FdUMP
-figure('Position', [240, 240, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [240, 240, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_tumor_FdUMP(good_idx), 'b-', 'LineWidth', 2.5);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3699,7 +3703,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 2E: Tumor FdUTP
-figure('Position', [260, 260, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [260, 260, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_tumor_FdUTP(good_idx), 'r-', 'LineWidth', 2.5);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');
@@ -3713,7 +3717,7 @@ drawnow;
 fprintf(' Saved: %s\n', filename);
 
 %% Figure 2F: Tumor FUTP
-figure('Position', [280, 280, 900, 650], 'Color', 'w', 'WindowStyle', 'docked');
+figure('Position', [280, 280, 900, 650], 'Color', 'w', 'WindowStyle', figure_window_style, 'Visible', figure_visibility);
 plot(results.time_hr(good_idx), results.concentrations.C_tumor_FUTP(good_idx), 'g-', 'LineWidth', 2.5);
 xlabel('Time (hours)', 'FontSize', 11, 'FontWeight', 'bold');
 ylabel('Concentration (µM)', 'FontSize', 11, 'FontWeight', 'bold');

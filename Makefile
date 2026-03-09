@@ -235,6 +235,7 @@ OUTPUT := output
 MOVIE_INPUT := $(OUTPUT)/snapshot%08d.jpg
 MOVIE_OUTPUT := $(OUTPUT)/out.mp4
 MOVIE_OUTPUT_FALLBACK := $(OUTPUT)/out_fallback.mp4
+MOVIE_OUTPUT_WINDOWS := $(OUTPUT)/out_windows.mp4
 
 jpeg: 
 	@magick identify -format "%h" $(OUTPUT)/initial.svg > __H.txt 
@@ -268,6 +269,14 @@ movie:
 			-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=$(FRAMERATE)" \
 			-movflags +faststart -an -y $(MOVIE_OUTPUT_FALLBACK) \
 	)
+
+movie_windows:
+	@echo "Creating Windows-compatible MP4 (H.264 baseline, CFR, yuv420p)..."
+	ffmpeg -hide_banner -loglevel warning \
+		-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
+		-vf "fps=$(FRAMERATE),scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" \
+		-c:v libx264 -preset medium -crf 22 -profile:v baseline -level 3.0 -tag:v avc1 \
+		-movflags +faststart -an -y $(MOVIE_OUTPUT_WINDOWS)
 # upgrade rules 
 
 SOURCE := PhysiCell_upgrade.zip 

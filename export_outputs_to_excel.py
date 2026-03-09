@@ -825,6 +825,22 @@ def _column_suffix_key(column_name: str) -> str:
     return _canonical_lookup_token(column_name.split("__", 1)[-1])
 
 
+def cell_type_group_label(value) -> str:
+    canonical = normalize_cell_type_label(value)
+    return CELL_TYPE_LABEL_TO_GROUP.get(canonical, "other_type")
+
+
+def phase_group_label(value) -> str:
+    canonical = normalize_phase_label(value)
+    if canonical in PROLIFERATIVE_PHASE_LABELS:
+        return "proliferative_phase"
+    if canonical in QUIESCENT_PHASE_LABELS:
+        return "quiescent_phase"
+    if canonical in DEATH_PHASE_LABELS:
+        return "death_phase"
+    return "other_phase"
+
+
 def merge_time_tables(tables: list[pd.DataFrame]) -> pd.DataFrame:
     merged = None
     for table in tables:
@@ -872,6 +888,25 @@ def build_curve_fitter_table(
         )
         tables.append(type_table)
 
+        grouped_type_table = (
+            type_df.assign(type_group=type_df["cell_type"].map(cell_type_group_label).map(sanitize_label))
+            .pivot_table(index="time_min", columns="type_group", values="count", aggfunc="sum")
+            .add_prefix("type_group_count__")
+            .reset_index()
+        )
+        tables.append(grouped_type_table)
+
+        grouped_type_fraction_table = grouped_type_table.copy()
+        type_group_cols = [col for col in grouped_type_fraction_table.columns if col != "time_min"]
+        if type_group_cols:
+            group_total = grouped_type_fraction_table[type_group_cols].sum(axis=1)
+            for col in type_group_cols:
+                grouped_type_fraction_table[col] = _safe_divide(grouped_type_fraction_table[col], group_total)
+            grouped_type_fraction_table = grouped_type_fraction_table.rename(
+                columns={col: col.replace("type_group_count__", "type_group_fraction__") for col in type_group_cols}
+            )
+            tables.append(grouped_type_fraction_table)
+
     if not phase_df.empty:
         phase_table = (
             phase_df.assign(phase=phase_df["phase"].map(sanitize_label))
@@ -880,6 +915,25 @@ def build_curve_fitter_table(
             .reset_index()
         )
         tables.append(phase_table)
+
+        grouped_phase_table = (
+            phase_df.assign(phase_group=phase_df["phase"].map(phase_group_label).map(sanitize_label))
+            .pivot_table(index="time_min", columns="phase_group", values="count", aggfunc="sum")
+            .add_prefix("phase_group_count__")
+            .reset_index()
+        )
+        tables.append(grouped_phase_table)
+
+        grouped_phase_fraction_table = grouped_phase_table.copy()
+        phase_group_cols = [col for col in grouped_phase_fraction_table.columns if col != "time_min"]
+        if phase_group_cols:
+            group_total = grouped_phase_fraction_table[phase_group_cols].sum(axis=1)
+            for col in phase_group_cols:
+                grouped_phase_fraction_table[col] = _safe_divide(grouped_phase_fraction_table[col], group_total)
+            grouped_phase_fraction_table = grouped_phase_fraction_table.rename(
+                columns={col: col.replace("phase_group_count__", "phase_group_fraction__") for col in phase_group_cols}
+            )
+            tables.append(grouped_phase_fraction_table)
 
     if not type_phase_df.empty:
         tagged = type_phase_df.assign(
@@ -1239,9 +1293,21 @@ def build_curve_fitter_column_dictionary(curve_df: pd.DataFrame) -> pd.DataFrame
         elif col.startswith("type_count__"):
             label = col.split("__", 1)[-1]
             rows.append({"column": col, "category": "cell_type", "description": f"Cell count for type '{label}'."})
+        elif col.startswith("type_group_count__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "cell_type_group", "description": f"Combined count for cell-type group '{label}' using cheat-sheet mappings."})
+        elif col.startswith("type_group_fraction__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "cell_type_group", "description": f"Fraction of typed cells in group '{label}' using cheat-sheet mappings."})
         elif col.startswith("phase_count__"):
             label = col.split("__", 1)[-1]
             rows.append({"column": col, "category": "cell_phase", "description": f"Cell count for phase '{label}'."})
+        elif col.startswith("phase_group_count__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "cell_phase_group", "description": f"Combined count for phase group '{label}' using cheat-sheet mappings."})
+        elif col.startswith("phase_group_fraction__"):
+            label = col.split("__", 1)[-1]
+            rows.append({"column": col, "category": "cell_phase_group", "description": f"Fraction of phased cells in group '{label}' using cheat-sheet mappings."})
         elif col.startswith("type_phase_count__"):
             label = col.split("__", 1)[-1]
             rows.append({"column": col, "category": "type_phase", "description": f"Joint count for cell-type/phase key '{label}'."})
@@ -1296,6 +1362,7 @@ def build_curve_fitter_stats_markdown(
         "- `cancer_fraction_of_typed_cells`, `immune_to_cancer_ratio`, `stroma_to_cancer_ratio`",
         "- `proliferative_index`, `death_phase_fraction`",
         "- Type/phase normalization follows the `PHYSICELL_ID_CHEAT_SHEET.md` IDs and labels when available.",
+        "- In `curve_fitter_table.csv`, use grouped columns like `type_group_count__*` and `phase_group_count__*` for combined populations.",
         "",
         "Spatial/ecology variables:",
         "- `ring_1_cells`, `outermost_occupied_ring_index`, `outermost_occupied_ring_cells`",
@@ -1322,7 +1389,11 @@ def build_curve_fitter_stats_markdown(
         "## Naming conventions",
         "",
         "- `type_count__X`: count of cell type `X` at each time.",
+        "- `type_group_count__G`: combined count for type group `G` (e.g., cancer_like, stroma_like, immune_like, other_type).",
+        "- `type_group_fraction__G`: fraction of typed cells in group `G`.",
         "- `phase_count__Y`: count of cell phase `Y` at each time.",
+        "- `phase_group_count__G`: combined count for phase group `G` (proliferative_phase, quiescent_phase, death_phase, other_phase).",
+        "- `phase_group_fraction__G`: fraction of phased cells in group `G`.",
         "- `type_phase_count__X__Y`: cross-count for type-phase pair.",
         "- `density__source`: density estimate from domain or bounding-box geometry.",
         "- `region_count__type__ring_N`: radial ring counts where rings are labeled as `ring 1`, `ring 2`, ... up to the first empty ring (max 250).",

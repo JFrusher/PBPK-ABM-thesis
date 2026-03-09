@@ -236,6 +236,7 @@ MOVIE_INPUT := $(OUTPUT)/snapshot%08d.jpg
 MOVIE_OUTPUT := $(OUTPUT)/out.mp4
 MOVIE_OUTPUT_FALLBACK := $(OUTPUT)/out_fallback.mp4
 MOVIE_OUTPUT_WINDOWS := $(OUTPUT)/out_windows.mp4
+MOVIE_OUTPUT_ULTRA := $(OUTPUT)/out_ultra.avi
 
 jpeg: 
 	@magick identify -format "%h" $(OUTPUT)/initial.svg > __H.txt 
@@ -255,20 +256,24 @@ gif:
 	magick convert $(OUTPUT)/s*.svg $(OUTPUT)/out.gif 
 	 
 movie:
-	@echo "Creating primary MP4 (H.264 baseline for max compatibility)..."
+	@echo "Creating strict Windows-compatible MP4..."
 	@ffmpeg -hide_banner -loglevel warning \
 		-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
-		-c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -profile:v baseline -level 3.0 -tag:v avc1 \
-		-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=$(FRAMERATE)" \
-		-movflags +faststart -an -y $(MOVIE_OUTPUT) \
-	|| ( \
-		echo "Primary encode failed; creating fallback MP4 (mpeg4 codec)..."; \
+		-vf "fps=$(FRAMERATE),scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" \
+		-c:v libx264 -preset medium -crf 22 -profile:v baseline -level 3.0 -tag:v avc1 \
+		-movflags +faststart -brand mp42 -an -y $(MOVIE_OUTPUT_WINDOWS)
+	@ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,pix_fmt -of default=nw=1 $(MOVIE_OUTPUT_WINDOWS) >/dev/null \
+		|| (echo "MP4 validation failed; writing fallback MP4..."; \
 		ffmpeg -hide_banner -loglevel warning \
 			-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
-			-c:v mpeg4 -q:v 3 -pix_fmt yuv420p \
-			-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=$(FRAMERATE)" \
-			-movflags +faststart -an -y $(MOVIE_OUTPUT_FALLBACK) \
-	)
+			-vf "fps=$(FRAMERATE),scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" \
+			-c:v mpeg4 -q:v 3 -an -y $(MOVIE_OUTPUT_FALLBACK))
+	@echo "Creating ultra-compatible AVI fallback (MJPEG)..."
+	@ffmpeg -hide_banner -loglevel warning \
+		-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
+		-vf "fps=$(FRAMERATE),scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+		-c:v mjpeg -q:v 3 -an -y $(MOVIE_OUTPUT_ULTRA)
+	@echo "Done. Try first: $(MOVIE_OUTPUT_WINDOWS) ; if Windows still errors, use: $(MOVIE_OUTPUT_ULTRA)"
 
 movie_windows:
 	@echo "Creating Windows-compatible MP4 (H.264 baseline, CFR, yuv420p)..."

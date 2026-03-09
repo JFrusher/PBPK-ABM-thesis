@@ -234,6 +234,7 @@ FRAMERATE := 24
 OUTPUT := output
 MOVIE_INPUT := $(OUTPUT)/snapshot%08d.jpg
 MOVIE_OUTPUT := $(OUTPUT)/out.mp4
+MOVIE_OUTPUT_FALLBACK := $(OUTPUT)/out_fallback.mp4
 
 jpeg: 
 	@magick identify -format "%h" $(OUTPUT)/initial.svg > __H.txt 
@@ -253,11 +254,20 @@ gif:
 	magick convert $(OUTPUT)/s*.svg $(OUTPUT)/out.gif 
 	 
 movie:
-	ffmpeg -hide_banner -loglevel warning \
+	@echo "Creating primary MP4 (H.264 baseline for max compatibility)..."
+	@ffmpeg -hide_banner -loglevel warning \
 		-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
-		-c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -profile:v high -level 4.1 \
-		-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
-		-movflags +faststart -an -y $(MOVIE_OUTPUT)
+		-c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -profile:v baseline -level 3.0 -tag:v avc1 \
+		-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=$(FRAMERATE)" \
+		-movflags +faststart -an -y $(MOVIE_OUTPUT) \
+	|| ( \
+		echo "Primary encode failed; creating fallback MP4 (mpeg4 codec)..."; \
+		ffmpeg -hide_banner -loglevel warning \
+			-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
+			-c:v mpeg4 -q:v 3 -pix_fmt yuv420p \
+			-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=$(FRAMERATE)" \
+			-movflags +faststart -an -y $(MOVIE_OUTPUT_FALLBACK) \
+	)
 # upgrade rules 
 
 SOURCE := PhysiCell_upgrade.zip 

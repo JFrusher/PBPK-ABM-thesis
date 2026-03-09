@@ -7,9 +7,9 @@
 %      compare_two_physicell_dirs("physicell_csvs_untreated", "physicell_csvs_treated")
 
 DIR_A = "Sim_results_8_csv";
-DIR_B = "Sim_results_7_csv";
+DIR_B = "Sim_results_9a_csv";
 LABEL_A = "Untreated";
-LABEL_B = "Treated With Mayo";
+LABEL_B = "Treated With de Gramont";
 OUT_SUBDIR = "comparison_figures_png2";
 HEADLESS_PNG_BATCH_MODE = false;
 DOCK_ALL_FIGURES = true;

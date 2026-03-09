@@ -232,6 +232,8 @@ untar:
 
 FRAMERATE := 24
 OUTPUT := output
+MOVIE_INPUT := $(OUTPUT)/snapshot%08d.jpg
+MOVIE_OUTPUT := $(OUTPUT)/out.mp4
 
 jpeg: 
 	@magick identify -format "%h" $(OUTPUT)/initial.svg > __H.txt 
@@ -251,7 +253,11 @@ gif:
 	magick convert $(OUTPUT)/s*.svg $(OUTPUT)/out.gif 
 	 
 movie:
-	ffmpeg -r 24 -f image2 -i output/snapshot%08d.jpg -vcodec libx264 -pix_fmt yuv420p -vf "scale='iw-mod(iw,2)':'ih-mod(ih,2)'" -crf 15 -an -y output/out.avi
+	ffmpeg -hide_banner -loglevel warning \
+		-framerate $(FRAMERATE) -f image2 -i $(MOVIE_INPUT) \
+		-c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -profile:v high -level 4.1 \
+		-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+		-movflags +faststart -an -y $(MOVIE_OUTPUT)
 # upgrade rules 
 
 SOURCE := PhysiCell_upgrade.zip 

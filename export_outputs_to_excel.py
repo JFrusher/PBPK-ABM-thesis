@@ -124,7 +124,8 @@ OUTPUT_RE = re.compile(r"output(\d+)\.xml$", re.IGNORECASE)
 TYPE_COLUMNS = ["cell_type_name", "cell_type"]
 PHASE_COLUMNS = ["cycle_phase", "current_phase", "phase", "state"]
 POSITION_COLUMNS = ["position_x", "position_y", "position_z"]
-MAX_RADIAL_RINGS = 250
+RADIAL_RING_WIDTH_UM = 250.0
+MAX_ACTIVE_RADIAL_RINGS = 64
 TIME_MIN_START_POSITIVE = 1e-9
 
 CELL_TYPE_ID_TO_LABEL = {
@@ -452,6 +453,11 @@ def _process_xml_file(
         dead_count = int(cell_df["dead"].sum())
         summary_row["dead_cells"] = dead_count
         summary_row["live_cells"] = int(len(cell_df)) - dead_count
+
+    death_radial_metrics = compute_death_radial_metrics(cell_df, type_col, phase_col)
+    if death_radial_metrics:
+        summary_row.update(death_radial_metrics)
+
     summary_rows.append(summary_row)
 
     type_counts = count_by_column(cell_df, type_col) if type_col else pd.DataFrame()
@@ -671,22 +677,16 @@ def compute_spatial_stats(cell_df: pd.DataFrame, type_col: str) -> tuple[pd.Data
     if len(cell_df) == 0:
         return spatial_stats, pd.DataFrame(columns=[type_col, "region", "count"])
 
-    r_max = float(r.max()) if len(r) else 0.0
-    if r_max <= 0:
+    if len(r) == 0:
         ring_index = np.ones(len(cell_df), dtype=int)
     else:
-        ring_fraction = np.asarray(r / r_max, dtype=float)
-        ring_index = np.floor(np.clip(ring_fraction, 0.0, 1.0) * MAX_RADIAL_RINGS).astype(int) + 1
-        ring_index = np.clip(ring_index, 1, MAX_RADIAL_RINGS)
+        ring_index = np.floor(np.asarray(r, dtype=float) / RADIAL_RING_WIDTH_UM).astype(int) + 1
+        ring_index = np.clip(ring_index, 1, max(MAX_ACTIVE_RADIAL_RINGS, 1))
 
     cell_df["ring_index"] = ring_index
 
-    ring_totals = pd.Series(ring_index).value_counts().reindex(range(1, MAX_RADIAL_RINGS + 1), fill_value=0)
-    zero_rings = ring_totals[ring_totals == 0]
-    if zero_rings.empty:
-        cutoff_ring = MAX_RADIAL_RINGS
-    else:
-        cutoff_ring = int(zero_rings.index[0])
+    cutoff_ring = int(pd.Series(ring_index).max()) if len(ring_index) else 1
+    cutoff_ring = max(1, min(cutoff_ring, MAX_ACTIVE_RADIAL_RINGS))
 
     cell_df = cell_df[cell_df["ring_index"] <= cutoff_ring].copy()
 
@@ -700,6 +700,86 @@ def compute_spatial_stats(cell_df: pd.DataFrame, type_col: str) -> tuple[pd.Data
     region_counts["region"] = region_counts["ring_index"].map(lambda idx: f"ring {int(idx)}")
     region_counts = region_counts[[type_col, "region", "count"]]
     return spatial_stats, region_counts
+
+
+def compute_death_radial_metrics(cell_df: pd.DataFrame, type_col: str | None, phase_col: str | None) -> dict:
+    metrics: dict[str, float | int] = {}
+
+    if phase_col is None or phase_col not in cell_df.columns:
+        return metrics
+
+    if not all(col in cell_df.columns for col in POSITION_COLUMNS[:2]):
+        return metrics
+
+    has_z = "position_z" in cell_df.columns
+    positions = cell_df[["position_x", "position_y"] + (["position_z"] if has_z else [])].copy()
+    center = positions.mean(axis=0)
+    deltas = positions - center
+
+    if has_z:
+        radius = np.sqrt(deltas["position_x"] ** 2 + deltas["position_y"] ** 2 + deltas["position_z"] ** 2)
+    else:
+        radius = np.sqrt(deltas["position_x"] ** 2 + deltas["position_y"] ** 2)
+
+    r = np.asarray(radius, dtype=float)
+    r_max = float(np.nanmax(r)) if r.size else np.nan
+
+    phase_labels = cell_df[phase_col].map(normalize_phase_label)
+    death_all_mask = phase_labels.isin(DEATH_PHASE_LABELS).to_numpy(dtype=bool)
+
+    if death_all_mask.any():
+        death_r = r[death_all_mask]
+        metrics["death_phase_cells_total"] = int(np.sum(death_all_mask))
+        metrics["death_phase_radius_mean_um"] = safe_value(np.nanmean(death_r))
+        metrics["death_phase_radius_p50_um"] = safe_value(np.nanpercentile(death_r, 50))
+        metrics["death_phase_radius_p90_um"] = safe_value(np.nanpercentile(death_r, 90))
+
+        if np.isfinite(r_max) and r_max > 0:
+            rel = death_r / r_max
+            metrics["death_phase_radius_relative_mean"] = safe_value(np.nanmean(rel))
+            metrics["death_phase_inner_fraction"] = safe_value(np.mean(rel <= 1.0 / 3.0))
+            metrics["death_phase_outer_fraction"] = safe_value(np.mean(rel >= 2.0 / 3.0))
+
+        death_ring = np.floor(death_r / RADIAL_RING_WIDTH_UM).astype(int) + 1
+        metrics["death_phase_mean_ring_index"] = safe_value(np.nanmean(death_ring))
+
+        for death_label in sorted(DEATH_PHASE_LABELS):
+            phase_mask = (phase_labels == death_label).to_numpy(dtype=bool)
+            if not phase_mask.any():
+                continue
+            phase_r = r[phase_mask]
+            key = sanitize_label(death_label)
+            metrics[f"death_phase_cells__{key}"] = int(np.sum(phase_mask))
+            metrics[f"death_phase_radius_mean__{key}_um"] = safe_value(np.nanmean(phase_r))
+
+    if type_col and type_col in cell_df.columns:
+        type_group = cell_df[type_col].map(cell_type_group_label)
+        tumor_mask = type_group.eq("cancer_like").to_numpy(dtype=bool)
+        metrics["tumor_like_cells_summary"] = int(np.sum(tumor_mask))
+        metrics["tumor_like_fraction_summary"] = safe_value(np.mean(tumor_mask))
+
+        if tumor_mask.any():
+            tumor_r = r[tumor_mask]
+            metrics["tumor_radius_mean_um"] = safe_value(np.nanmean(tumor_r))
+            metrics["tumor_radius_p90_um"] = safe_value(np.nanpercentile(tumor_r, 90))
+            metrics["tumor_volume_proxy_um3"] = safe_value((4.0 / 3.0) * np.pi * (np.nanpercentile(tumor_r, 95) ** 3))
+
+            tumor_death_mask = tumor_mask & death_all_mask
+            if tumor_death_mask.any():
+                td_r = r[tumor_death_mask]
+                metrics["tumor_death_cells_total"] = int(np.sum(tumor_death_mask))
+                metrics["tumor_death_radius_mean_um"] = safe_value(np.nanmean(td_r))
+                metrics["tumor_death_radius_p50_um"] = safe_value(np.nanpercentile(td_r, 50))
+                metrics["tumor_death_radius_p90_um"] = safe_value(np.nanpercentile(td_r, 90))
+                metrics["tumor_death_mean_ring_index"] = safe_value(np.nanmean(np.floor(td_r / RADIAL_RING_WIDTH_UM).astype(int) + 1))
+
+                if np.isfinite(r_max) and r_max > 0:
+                    td_rel = td_r / r_max
+                    metrics["tumor_death_radius_relative_mean"] = safe_value(np.nanmean(td_rel))
+                    metrics["tumor_death_inner_fraction"] = safe_value(np.mean(td_rel <= 1.0 / 3.0))
+                    metrics["tumor_death_outer_fraction"] = safe_value(np.mean(td_rel >= 2.0 / 3.0))
+
+    return metrics
 
 
 def compute_attribute_stats(cell_df: pd.DataFrame, type_col: str) -> pd.DataFrame:
@@ -1191,6 +1271,11 @@ def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
         highlights["stroma_to_cancer_ratio"] = _safe_divide(stroma_total, cancer_total)
         highlights["cancer_like_growth_cells_per_min"] = _finite_diff(t, cancer_total)
 
+        if np.any(np.isfinite(cancer_total)):
+            first_cancer = cancer_total[np.where(np.isfinite(cancer_total))[0][0]]
+            highlights["tumor_relative_volume_vs_first"] = _safe_divide(cancer_total, first_cancer)
+            highlights["tumor_relative_volume_percent_vs_first"] = highlights["tumor_relative_volume_vs_first"] * 100.0
+
     phase_cols = _select_columns_with_prefix(df, "phase_count__")
     if phase_cols:
         proliferative_phase_keys = {_lookup_token(label) for label in PROLIFERATIVE_PHASE_LABELS}
@@ -1263,6 +1348,38 @@ def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
             highlights["outermost_occupied_ring_cells"] = outermost_ring_cells
             highlights["outermost_to_ring1_ratio"] = _safe_divide(outermost_ring_cells, first_ring_cells)
             highlights["outermost_ring_fraction"] = _safe_divide(outermost_ring_cells, total_region_cells)
+
+    death_radial_summary_cols = [
+        "death_phase_cells_total",
+        "death_phase_radius_mean_um",
+        "death_phase_radius_p50_um",
+        "death_phase_radius_p90_um",
+        "death_phase_radius_relative_mean",
+        "death_phase_inner_fraction",
+        "death_phase_outer_fraction",
+        "death_phase_mean_ring_index",
+        "tumor_like_cells_summary",
+        "tumor_like_fraction_summary",
+        "tumor_radius_mean_um",
+        "tumor_radius_p90_um",
+        "tumor_volume_proxy_um3",
+        "tumor_death_cells_total",
+        "tumor_death_radius_mean_um",
+        "tumor_death_radius_p50_um",
+        "tumor_death_radius_p90_um",
+        "tumor_death_mean_ring_index",
+        "tumor_death_radius_relative_mean",
+        "tumor_death_inner_fraction",
+        "tumor_death_outer_fraction",
+    ]
+    death_radial_summary_cols.extend([
+        col for col in df.columns
+        if col.startswith("death_phase_radius_mean__") or col.startswith("death_phase_cells__")
+    ])
+
+    for col in death_radial_summary_cols:
+        if col in df.columns:
+            highlights[col] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
 
     micro_mean_cols = _select_columns_with_prefix(df, "micro_mean__")
     for col in micro_mean_cols[:3]:
@@ -1367,6 +1484,9 @@ def build_curve_fitter_stats_markdown(
         "Spatial/ecology variables:",
         "- `ring_1_cells`, `outermost_occupied_ring_index`, `outermost_occupied_ring_cells`",
         "- `outermost_to_ring1_ratio`, `outermost_ring_fraction`",
+        "- `tumor_relative_volume_vs_first`, `tumor_relative_volume_percent_vs_first`",
+        "- `death_phase_radius_mean_um`, `tumor_death_radius_mean_um`, `tumor_death_mean_ring_index`",
+        "- `death_phase_radius_mean__<phase>_um` for per-death-phase radial concentration",
         "- `micro_mean__<substrate>`, `micro_mean_slope_per_min__<substrate>` (first up to 3 substrates)",
         "",
         "## Mapping to MATLAB analysis scripts",
@@ -1396,7 +1516,7 @@ def build_curve_fitter_stats_markdown(
         "- `phase_group_fraction__G`: fraction of phased cells in group `G`.",
         "- `type_phase_count__X__Y`: cross-count for type-phase pair.",
         "- `density__source`: density estimate from domain or bounding-box geometry.",
-        "- `region_count__type__ring_N`: radial ring counts where rings are labeled as `ring 1`, `ring 2`, ... up to the first empty ring (max 250).",
+        "- `region_count__type__ring_N`: radial ring counts where each ring is a 250 µm radial bin (`ring 1` = 0-250 µm, `ring 2` = 250-500 µm, etc.; capped at 64 active rings).",
         "- `micro_<stat>__substrate`: microenvironment concentration statistics (`mean`, `min`, `max`, `std`, `p10`, `p50`, `p90`).",
         "- `attr_<stat>__type__attribute`: per-type cell attribute statistics (`mean`, `std`, `min`, `max`).",
         "",

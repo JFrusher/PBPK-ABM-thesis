@@ -163,7 +163,12 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
     hold(ax, 'on');
 
     % Baseline timeline
-    line(ax, [tMin tMax] / 60, [0 0], 'Color', [0.15 0.15 0.15], 'LineWidth', 1.0);
+    % If there is a dose at tMin (e.g., 0), pad the left axis a bit so it's visible
+    padLeft = 0;
+    if any(abs([startMin; endMin] - tMin) < 1e-6)
+        padLeft = 0.5; % hours
+    end
+    line(ax, [tMin-padLeft tMax] / 60, [0 0], 'Color', [0.15 0.15 0.15], 'LineWidth', 1.0);
 
     % Draw low-intensity windows for non-continuous, non-bolus entries
     for i = 1:size(otherSegments,1)

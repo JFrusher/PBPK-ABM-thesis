@@ -37,6 +37,7 @@ slurm-*.out
 !/custom_modules/
 !/beta/
 !/Makefile
+!/WP2/**
 !*.cpp
 !*.h
 !*.m

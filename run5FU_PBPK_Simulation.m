@@ -468,7 +468,7 @@ function [results] = run5FU_PBPK_Simulation(inputFile, outputPrefix, paramOverri
         % ─────────────────────────────────────────────────────────────
         fprintf('SOLVER: Using FIXED timestep (dt=%.2f min) - Stable reference method\n', params.fixed_timestep_min);
         dt_fixed = params.fixed_timestep_min;
-        maxTime = max(dosingRegimen.end_time_min) + 180;  % +3 hours observation
+        maxTime = max(dosingRegimen.end_time_min) + params.post_dose_observation_min;
         time_min = (0:dt_fixed:maxTime)';
         
     elseif strcmp(solver_method, 'adaptive')
@@ -514,7 +514,7 @@ function [results] = run5FU_PBPK_Simulation(inputFile, outputPrefix, paramOverri
         end
         
         % Generate simulation end time
-        maxTime = max_dose_end + 600; % +10 hours observation
+        maxTime = max_dose_end + params.post_dose_observation_min;
         
         % Build timestep array
         time_min = [];
@@ -1362,17 +1362,17 @@ function params = initialise5FUParameters()
     %% NUMERICAL SOLVER CONFIGURATION
     
     % Solver method: 'fixed' or 'adaptive'
-    % - 'fixed': Simple fixed timestep Euler method (0.1 min). Slower but more stable.
-    % - 'adaptive': Smart dosing-aware timesteps (faster, maintains accuracy). 
-    % Set to 'fixed' to debug numerical instabilities.
-    params.solver_method = 'adaptive';  % Switch between 'fixed' and 'adaptive'
+    % - 'fixed': Simple fixed timestep Euler method (0.1 min). Slower but numerically smoother.
+    % - 'adaptive': Smart dosing-aware timesteps (faster, can look less smooth with coarse steps).
+    params.solver_method = 'fixed';  % Switch between 'fixed' and 'adaptive'
     params.fixed_timestep_min = 0.1;  % Minutes (only used if solver_method='fixed')
     params.enable_ode_diagnostics = true;  % Enable detailed ODE solver logging
+    params.post_dose_observation_min = 180; % Minutes after final dose for AUC/plots
     
     % Adaptive timestep configuration (only used if solver_method='adaptive')
     % Uses fine timesteps around dosing events, coarse timesteps elsewhere
     params.adaptive_fine_timestep_min = 0.1;     % Fine timestep during critical periods (min)
-    params.adaptive_coarse_timestep_min = 1.0;   % Coarse timestep outside critical periods (min)
+    params.adaptive_coarse_timestep_min = 0.25;  % Coarse timestep outside critical periods (min)
     params.adaptive_window_before_min = 60;      % Minutes before dose start to use fine timesteps
     params.adaptive_window_after_min = 180;      % Minutes after dose end to use fine timesteps
     
@@ -3072,6 +3072,36 @@ fprintf('\n═══════════════════════
 fprintf('CALCULATING PHARMACOKINETIC METRICS\n');
 fprintf('════════════════════════════════════════════════════════════════\n\n');
 
+% Ensure monotonic, finite inputs for robust numerical integration
+time_min = time_min(:);
+if any(~isfinite(time_min))
+    error('calculatePKMetrics:InvalidTime', 'time_min contains non-finite values.');
+end
+if any(diff(time_min) <= 0)
+    [time_min, sortIdx] = sort(time_min, 'ascend');
+    [time_min, uniqueIdx] = unique(time_min, 'stable');
+    fieldsC = fieldnames(C);
+    for k = 1:numel(fieldsC)
+        v = C.(fieldsC{k})(:);
+        if numel(v) == numel(sortIdx)
+            v = v(sortIdx);
+            C.(fieldsC{k}) = v(uniqueIdx);
+        end
+    end
+    fprintf('⚠️  PK metrics input had non-monotonic/duplicate time points; sorted and deduplicated before AUC.\n');
+end
+
+finiteCentralMask = isfinite(time_min) & isfinite(C.C_central);
+if ~all(finiteCentralMask)
+    fprintf('⚠️  Non-finite central concentration/time points removed before AUC integration.\n');
+end
+time_auc = time_min(finiteCentralMask);
+C_central_auc = C.C_central(finiteCentralMask);
+
+if numel(time_auc) < 2
+    error('calculatePKMetrics:InsufficientPoints', 'Insufficient valid points for AUC calculation.');
+end
+
 % ===== STEP 1: VALIDATE INPUT ARRAYS =====%
 nTimePoints = length(time_min);
 fprintf('Integration points: %d\n', nTimePoints);
@@ -3099,7 +3129,7 @@ fprintf('Step 1: Trapezoidal integration of concentration-time profiles\n');
 fprintf('─────────────────────────────────────────────────────────────\n');
 
 % Central compartment AUC (primary exposure metric)
-metrics.AUC_central_uM_min = trapz(time_min, C.C_central);
+metrics.AUC_central_uM_min = trapz(time_auc, C_central_auc);
 fprintf('Central compartment AUC: %.1f µM·min\n', metrics.AUC_central_uM_min);
 
 % Tumor compartment AUC (therapeutic target site)
@@ -3173,6 +3203,32 @@ fprintf('Central AUC: %.2f mg·h/L (from %.1f µM·min)\n', ...
 metrics.AUC_tumor_mg_h_L = metrics.AUC_tumor_uM_min * conversion_factor;
 fprintf('Tumor AUC: %.2f mg·h/L (from %.1f µM·min)\n', ...
     metrics.AUC_tumor_mg_h_L, metrics.AUC_tumor_uM_min);
+
+% Independent cross-check path: convert concentration first, integrate in hours
+C_central_mg_L_series = C_central_auc * (MW_5FU / 1000);
+time_hr_auc = time_auc / 60;
+metrics.AUC_central_mg_h_L_direct = trapz(time_hr_auc, C_central_mg_L_series);
+metrics.AUC_central_crosscheck_rel_diff_pct = 100 * abs(metrics.AUC_central_mg_h_L_direct - metrics.AUC_central_mg_h_L) / max(abs(metrics.AUC_central_mg_h_L), eps);
+
+fprintf('Cross-check AUC (direct mg/L·h integration): %.4f mg·h/L\n', metrics.AUC_central_mg_h_L_direct);
+fprintf('Cross-check relative difference: %.4f%%\n', metrics.AUC_central_crosscheck_rel_diff_pct);
+if metrics.AUC_central_crosscheck_rel_diff_pct > 0.5
+    fprintf('⚠️  AUC cross-check mismatch > 0.5%%, investigate time grid or concentration integrity.\n');
+end
+
+% Tail contribution diagnostic to detect truncated simulation horizon
+tailWindowMin = min(60, max(10, floor((time_auc(end) - time_auc(1)) / 20)));
+tailMask = time_auc >= (time_auc(end) - tailWindowMin);
+if sum(tailMask) >= 2
+    aucTail_uM_min = trapz(time_auc(tailMask), C_central_auc(tailMask));
+    metrics.AUC_tail_last_window_fraction = max((aucTail_uM_min * conversion_factor) / max(metrics.AUC_central_mg_h_L, eps), 0);
+else
+    metrics.AUC_tail_last_window_fraction = 0;
+end
+fprintf('Tail AUC fraction (last %.0f min): %.4f\n', tailWindowMin, metrics.AUC_tail_last_window_fraction);
+if metrics.AUC_tail_last_window_fraction > 0.05
+    fprintf('⚠️  >5%% of AUC lies in final window; extend post-dose simulation horizon for stable AUC.\n');
+end
 
 % Tumor/Central ratio (literature reference: ~0.61 from Konings et al. 2010)
 if metrics.AUC_central_mg_h_L > 0
@@ -3508,7 +3564,7 @@ function saveDetailedCSVOutputs(results, outputPrefix, logger)
     T_summary = table(...
         {'Total_5FU_exposure'; 'FdUMP_exposure'; 'FdUTP_exposure'; 'FUTP_exposure'}, ...
         [results.metrics.AUC_tumor_mg_h_L; ...
-         results.metrics.AUC_tumor_FdUTP/60; ...%change back
+         results.metrics.AUC_FdUMP/60; ...
          results.metrics.AUC_tumor_FdUTP/60; ...
          results.metrics.AUC_tumor_FUTP/60], ...
         'VariableNames', {'Metabolite', 'Tumor_AUC_units'});

@@ -17,7 +17,7 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
 %   - Uses a one-line barcode timeline
 %   - Encodes continuous-dose intensity as relative bar height
 %   - Keeps bolus doses as event ticks
-%   - Uses fixed standardized figure size for consistent visuals
+%   - Uses publication-oriented panel sizing for A4 4x2 figure grids
 %   - Computes total dose and dose/day from CSV timing + dosing fields
 
     if nargin < 1 || (~ischar(csvFilename) && ~isstring(csvFilename))
@@ -31,7 +31,8 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
 
     if nargin < 2 || isempty(outputPath)
         [~, baseName, ~] = fileparts(csvFilename);
-        outputPath = sprintf('%s_barcode.png', baseName);
+        scheduleLabel = makeScheduleLabel(baseName);
+        outputPath = sprintf('%s_barcode.png', scheduleLabel);
     end
     [outFolder, outName, outExt] = fileparts(outputPath);
     if isempty(outExt)
@@ -88,22 +89,35 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
     % Other windowed dosing types (e.g., sinusoidal/custom)
     otherWindowMask = ~bolusMask & ~continuousMask;
 
-    bolusTimes = sort(startMin(bolusMask));
+    bolusTimes = startMin(bolusMask);
 
-    continuousRate = zeros(size(startMin));
+    bolusValues = ones(size(startMin));
+    if ismember('dose_amount', dosing.Properties.VariableNames)
+        bolusValues = double(dosing.dose_amount(:));
+    end
+    bolusValues(~isfinite(bolusValues) | bolusValues < 0) = 0;
+
+    bolusDoseValues = bolusValues(bolusMask);
+    if ~isempty(bolusTimes)
+        [bolusTimes, bolusOrder] = sort(bolusTimes);
+        bolusDoseValues = bolusDoseValues(bolusOrder);
+    end
+
+    windowValue = zeros(size(startMin));
     if ismember('infusion_rate', dosing.Properties.VariableNames)
-        continuousRate(continuousMask) = double(dosing.infusion_rate(continuousMask));
+        windowValue = double(dosing.infusion_rate(:));
     elseif ismember('mean_rate', dosing.Properties.VariableNames)
-        continuousRate(continuousMask) = double(dosing.mean_rate(continuousMask));
+        windowValue = double(dosing.mean_rate(:));
     elseif ismember('dose_amount', dosing.Properties.VariableNames)
         validDur = durationMin > 0;
-        tempRate = zeros(size(startMin));
-        tempRate(validDur) = double(dosing.dose_amount(validDur)) ./ durationMin(validDur);
-        continuousRate(continuousMask) = tempRate(continuousMask);
+        windowValue(validDur) = double(dosing.dose_amount(validDur)) ./ durationMin(validDur);
     else
-        continuousRate(continuousMask) = 1;
+        windowValue(:) = 1;
     end
-    continuousRate(~isfinite(continuousRate) | continuousRate < 0) = 0;
+    windowValue(~isfinite(windowValue) | windowValue < 0) = 0;
+
+    continuousRate = windowValue(continuousMask);
+    otherWindowValue = windowValue(otherWindowMask);
 
     % Dose summary: rate-based rows use mg/min * minutes, bolus uses dose_amount (mg)
     bolusDoseMg = 0;
@@ -122,14 +136,39 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
 
     totalDoseMg = bolusDoseMg + rateDoseMg;
 
-    contSegments = [startMin(continuousMask), endMin(continuousMask), continuousRate(continuousMask)];
-    if ~isempty(contSegments)
+    contStart = startMin(continuousMask);
+    contEnd = endMin(continuousMask);
+    contVal = continuousRate(:);
+    nCont = min([numel(contStart), numel(contEnd), numel(contVal)]);
+    if nCont > 0
+        contSegments = [contStart(1:nCont), contEnd(1:nCont), contVal(1:nCont)];
         contSegments = sortrows(contSegments, 1);
+    else
+        contSegments = zeros(0, 3);
     end
 
-    otherSegments = [startMin(otherWindowMask), endMin(otherWindowMask)];
-    if ~isempty(otherSegments)
+    otherStart = startMin(otherWindowMask);
+    otherEnd = endMin(otherWindowMask);
+    otherVal = otherWindowValue(:);
+    nOther = min([numel(otherStart), numel(otherEnd), numel(otherVal)]);
+    if nOther > 0
+        otherSegments = [otherStart(1:nOther), otherEnd(1:nOther), otherVal(1:nOther)];
         otherSegments = sortrows(otherSegments, 1);
+    else
+        otherSegments = zeros(0, 3);
+    end
+
+    hasWindowDose = ~isempty(contSegments) || ~isempty(otherSegments);
+    hasBolusDose = ~isempty(bolusTimes);
+
+    maxWindowDose = max([contVal; otherVal; 0]);
+    if maxWindowDose <= 0
+        maxWindowDose = 1;
+    end
+
+    maxBolusDose = max([bolusDoseValues; 0]);
+    if maxBolusDose <= 0
+        maxBolusDose = 1;
     end
 
     allTimes = [startMin; endMin];
@@ -155,12 +194,34 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
     doseSummary.rateDose_mg = rateDoseMg;
     doseSummary.span_days = spanDays;
 
-    % --- Standardized figure layout ---
-    fig = figure('Color', 'w', 'Position', [100 100 1400 360], ...
+    % --- Publication-oriented panel sizing (one slot in an A4 4x2 layout) ---
+    panelSizeCm = getA4GridPanelSizeCm(4, 2);
+    fig = figure('Color', 'w', ...
                  'Name', 'Dosing Barcode', 'NumberTitle', 'off', ...
-                 'Visible', 'on');
-    ax = axes(fig, 'Position', [0.07 0.20 0.78 0.70]);
+                 'Visible', 'on', ...
+                 'Units', 'centimeters', ...
+                 'Position', [2 2 panelSizeCm(1) panelSizeCm(2)], ...
+                 'PaperUnits', 'centimeters', ...
+                 'PaperPositionMode', 'auto');
+    ax = axes(fig, 'Position', [0.10 0.18 0.86 0.72]);
     hold(ax, 'on');
+
+    baseFont = 8.5;
+    showLegend = strcmpi(getenv('PBPK_SHOW_BARCODE_LEGEND'), '1');
+    set(ax, 'FontName', 'Helvetica', 'FontSize', baseFont, 'LineWidth', 0.9, ...
+            'TickDir', 'out', 'Box', 'off', 'Layer', 'top');
+
+    % Colorblind-safe, print-friendly palette.
+    cContinuousFace = [0.20 0.48 0.72];
+    cContinuousEdge = [0.11 0.30 0.47];
+    cWindowFace = [0.93 0.68 0.24];
+    cWindowEdge = [0.72 0.49 0.12];
+    cBolus = [0.72 0.20 0.20];
+    cBaseline = [0.18 0.18 0.18];
+
+    hasWindowMagnitude = hasWindowDose && any([contVal; otherVal] > 0);
+    hasBolusMagnitude = hasBolusDose && any(bolusDoseValues > 0);
+    bothDoseTypes = hasWindowMagnitude && hasBolusMagnitude;
 
     % Baseline timeline
     % If there is a dose at tMin (e.g., 0), pad the left axis a bit so it's visible
@@ -168,75 +229,206 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
     if any(abs([startMin; endMin] - tMin) < 1e-6)
         padLeft = 0.5; % hours
     end
-    line(ax, [tMin-padLeft tMax] / 60, [0 0], 'Color', [0.15 0.15 0.15], 'LineWidth', 1.0);
+    line(ax, [tMin-padLeft tMax] / 60, [0 0], 'Color', cBaseline, 'LineWidth', 1.0);
 
     % Draw low-intensity windows for non-continuous, non-bolus entries
+    hOther = gobjects(0);
     for i = 1:size(otherSegments,1)
         x0 = otherSegments(i,1) / 60;
         x1 = otherSegments(i,2) / 60;
         w = max(x1 - x0, 1e-6);
-        rectangle(ax, 'Position', [x0, 0, w, 0.22], ...
-                  'FaceColor', [0.95 0.65 0.20], ...
-                  'EdgeColor', [0.75 0.48 0.12], ...
+        hRect = rectangle(ax, 'Position', [x0, 0, w, otherSegments(i,3)], ...
+                  'FaceColor', cWindowFace, ...
+                  'EdgeColor', cWindowEdge, ...
                   'LineWidth', 0.8, ...
                   'Curvature', [0.02 0.02]);
+        if i == 1
+            hOther = hRect;
+        end
     end
 
     % Draw continuous windows with relative height (key visual signal)
+    hCont = gobjects(0);
     if ~isempty(contSegments)
-        maxRate = max(contSegments(:,3));
-        if maxRate <= 0
-            maxRate = 1;
-        end
-
         for i = 1:size(contSegments,1)
             x0 = contSegments(i,1) / 60;
             x1 = contSegments(i,2) / 60;
             w = max(x1 - x0, 1e-6);
-            h = contSegments(i,3) / maxRate;
-            h = max(0.06, min(1.0, h));
-
-            rectangle(ax, 'Position', [x0, 0, w, h], ...
-                      'FaceColor', [0.20 0.60 0.95], ...
-                      'EdgeColor', [0.10 0.35 0.65], ...
+            hRect = rectangle(ax, 'Position', [x0, 0, w, contSegments(i,3)], ...
+                      'FaceColor', cContinuousFace, ...
+                      'EdgeColor', cContinuousEdge, ...
                       'LineWidth', 0.6, ...
                       'Curvature', [0.02 0.02]);
+            if i == 1
+                hCont = hRect;
+            end
         end
-    else
-        maxRate = 0;
+    end
+
+    hBolus = gobjects(0);
+    if bothDoseTypes
+        yyaxis(ax, 'right');
     end
 
     if ~isempty(bolusTimes)
         xHours = bolusTimes / 60;
+        yBolus = bolusDoseValues;
         for i = 1:numel(xHours)
-            line(ax, [xHours(i) xHours(i)], [0 1], ...
-                'Color', [0.90 0.25 0.25], 'LineWidth', 2.4);
+            hLine = line(ax, [xHours(i) xHours(i)], [0 yBolus(i)], ...
+                'Color', cBolus, 'LineWidth', 1.8, 'LineStyle', '-');
+            if i == 1
+                hBolus = hLine;
+            end
         end
-        scatter(ax, xHours, repmat(1, size(xHours)), 46, ...
-                'MarkerFaceColor', [0.90 0.25 0.25], ...
+        scatter(ax, xHours, yBolus, 46, ...
+                'MarkerFaceColor', cBolus, ...
                 'MarkerEdgeColor', 'none');
     end
 
     xlim(ax, [tMin tMax] / 60);
-    ylim(ax, [0 1.15]);
-    yticks(ax, [0 0.25 0.50 0.75 1.0]);
-    yticklabels(ax, {'0', '0.25', '0.50', '0.75', '1.00'});
+    if bothDoseTypes
+        yyaxis(ax, 'left');
+        ylim(ax, [0 1.08 * maxWindowDose]);
+        setDoseAxisTicks(ax, maxWindowDose);
+        ylabel(ax, 'Infusion/window value', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
 
-    xlabel(ax, 'Time (hours)', 'FontSize', 12, 'FontWeight', 'bold');
-    ylabel(ax, 'Relative dosing intensity', 'FontSize', 12, 'FontWeight', 'bold');
+        yyaxis(ax, 'right');
+        ylim(ax, [0 1.08 * maxBolusDose]);
+        setDoseAxisTicks(ax, maxBolusDose);
+        ylabel(ax, 'Bolus dose', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+    elseif hasWindowDose
+        ylim(ax, [0 1.08 * maxWindowDose]);
+        setDoseAxisTicks(ax, maxWindowDose);
+        ylabel(ax, 'Infusion/window value', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+    else
+        ylim(ax, [0 1.08 * maxBolusDose]);
+        setDoseAxisTicks(ax, maxBolusDose);
+        ylabel(ax, 'Bolus dose', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+    end
+
+    if ~bothDoseTypes
+        try
+            if numel(ax.YAxis) > 1
+                ax.YAxis(2).Visible = 'off';
+            end
+        catch
+        end
+    end
+
+    applyPublicationTimeTicks(ax, tMin, tMax);
+
+    xlabel(ax, 'Time', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
 
     [~, titleName, ~] = fileparts(csvFilename);
-    title(ax, sprintf('Dosing Barcode: %s', titleName), ...
-            'FontSize', 14, 'FontWeight', 'bold', 'Interpreter', 'none');
+    scheduleLabel = makeScheduleLabel(titleName);
+    title(ax, sprintf('Dosing Schedule: %s', scheduleLabel), ...
+            'FontSize', baseFont + 2, 'FontWeight', 'bold', 'Interpreter', 'none');
+
+    legendHandles = gobjects(0);
+    legendLabels = {};
+    if ~isempty(hCont)
+        legendHandles(end+1) = hCont; %#ok<AGROW>
+        legendLabels{end+1} = 'Continuous/constant window'; %#ok<AGROW>
+    end
+    if ~isempty(hOther)
+        legendHandles(end+1) = hOther; %#ok<AGROW>
+        legendLabels{end+1} = 'Other dosing window'; %#ok<AGROW>
+    end
+    if ~isempty(hBolus)
+        legendHandles(end+1) = hBolus; %#ok<AGROW>
+        legendLabels{end+1} = 'Bolus event'; %#ok<AGROW>
+    end
+    if showLegend && ~isempty(legendHandles)
+        lgd = legend(ax, legendHandles, legendLabels, 'Location', 'northoutside', ...
+                     'Orientation', 'horizontal', 'Box', 'off');
+        lgd.FontSize = baseFont;
+    end
 
     grid(ax, 'on');
-    ax.GridAlpha = 0.20;
-    ax.Layer = 'top';
+    ax.GridAlpha = 0.18;
+    ax.MinorGridAlpha = 0.10;
+    ax.XMinorGrid = 'off';
+    ax.YMinorGrid = 'on';
+    ax.GridColor = [0.2 0.2 0.2];
 
-    exportgraphics(fig, outputPath, 'Resolution', 200);
+    if bothDoseTypes
+        yyaxis(ax, 'right');
+        ax.YColor = cBolus;
+        yyaxis(ax, 'left');
+    end
+
+    exportgraphics(fig, outputPath, 'Resolution', 600);
     fprintf('Saved barcode plot: %s\n', outputPath);
     fprintf('Total dose: %.3f mg\n', doseSummary.totalDose_mg);
     fprintf('Total dose/day: %.3f mg/day (span %.3f days)\n', doseSummary.totalDosePerDay_mg_day, doseSummary.span_days);
+end
+
+function applyPublicationTimeTicks(ax, tMin, tMax)
+    spanHours = max((tMax - tMin) / 60, 1e-6);
+    if spanHours <= 72
+        tickStepHours = 12;
+        if spanHours <= 24
+            tickStepHours = 6;
+        end
+        t0 = floor((tMin / 60) / tickStepHours) * tickStepHours;
+        t1 = ceil((tMax / 60) / tickStepHours) * tickStepHours;
+        ticks = t0:tickStepHours:t1;
+        xticks(ax, ticks);
+        xtickformat(ax, '%.0f h');
+    else
+        tickStepDays = 1;
+        if spanHours > 14 * 24
+            tickStepDays = 2;
+        end
+        t0d = floor((tMin / 1440) / tickStepDays) * tickStepDays;
+        t1d = ceil((tMax / 1440) / tickStepDays) * tickStepDays;
+        ticksDays = t0d:tickStepDays:t1d;
+        xticks(ax, ticksDays * 24);
+        labels = compose('Day %d', round(ticksDays));
+        xticklabels(ax, labels);
+    end
+end
+
+function setDoseAxisTicks(ax, maxDoseValue)
+    nTicks = 5;
+    ticks = linspace(0, maxDoseValue, nTicks);
+    yticks(ax, ticks);
+
+    if maxDoseValue >= 100
+        ytickformat(ax, '%.0f');
+    elseif maxDoseValue >= 1
+        ytickformat(ax, '%.2g');
+    else
+        ytickformat(ax, '%.2f');
+    end
+end
+
+function panelSizeCm = getA4GridPanelSizeCm(nRows, nCols)
+    % Designed for portrait A4 with practical margins/gaps in dissertations.
+    pageW = 21.0;
+    pageH = 29.7;
+    marginL = 1.2;
+    marginR = 1.2;
+    marginT = 1.2;
+    marginB = 1.2;
+    gapW = 0.6;
+    gapH = 0.55;
+
+    usableW = pageW - marginL - marginR - gapW * (nCols - 1);
+    usableH = pageH - marginT - marginB - gapH * (nRows - 1);
+    tileW = usableW / nCols;
+    tileH = usableH / nRows;
+    panelSizeCm = [tileW, tileH];
+end
+
+function scheduleLabel = makeScheduleLabel(baseName)
+    baseName = char(string(baseName));
+    tok = regexp(baseName, '^\s*(\d+)', 'tokens', 'once');
+    if ~isempty(tok)
+        scheduleLabel = sprintf('S%d', str2double(tok{1}));
+    else
+        scheduleLabel = strrep(baseName, '_', ' ');
+    end
 end
 
 function shiftedCsvPath = exportPhysiCellVersion(dosing, sourceCsvPath, shiftMinutes)

@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite it using the metadata below and include PhysiCell/BioFVM citations from CITATION.txt."
+title: "PBPK-ABM Thesis Model for 5-FU Tumor Microenvironment Studies"
+type: software
+version: "1.14.2-thesis"
+license: "BSD-3-Clause"
+authors:
+  - name: "PBPK-ABM-thesis contributors"
+keywords:
+  - pharmacokinetics
+  - PBPK
+  - agent-based-modeling
+  - physiCell
+  - oncology
+  - 5-FU
+  - computational-biology
+references:
+  - type: article
+    authors:
+      - family-names: "Ghaffarizadeh"
+        given-names: "A"
+      - family-names: "Heiland"
+        given-names: "R"
+      - family-names: "Friedman"
+        given-names: "SH"
+      - family-names: "Mumenthaler"
+        given-names: "SM"
+      - family-names: "Macklin"
+        given-names: "P"
+    title: "PhysiCell: an Open Source Physics-Based Cell Simulator for Multicellular Systems"
+    journal: "PLoS Computational Biology"
+    year: 2018
+    doi: "10.1371/journal.pcbi.1005991"
+  - type: article
+    authors:
+      - family-names: "Ghaffarizadeh"
+        given-names: "A"
+      - family-names: "Friedman"
+        given-names: "SH"
+      - family-names: "Macklin"
+        given-names: "P"
+    title: "BioFVM: an efficient parallelized diffusive transport solver for 3-D biological simulations"
+    journal: "Bioinformatics"
+    year: 2016
+    doi: "10.1093/bioinformatics/btv730"

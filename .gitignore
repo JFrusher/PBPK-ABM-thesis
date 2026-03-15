@@ -47,6 +47,15 @@ slurm-*.out
 !/main.cpp
 !/main-backup.cpp
 !/.gitignore
+!/.github/**
+!*.cff
+!/LICENSE
+!/README.md
+!/CITATION.txt
+!/VERSION.txt
+!/SECURITY.md
+!/CONTRIBUTING.md
+!/CODE_OF_CONDUCT.md
 
 # Explicitly ban the heavy stuff just in case
 *.csv

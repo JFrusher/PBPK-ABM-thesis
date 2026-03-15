@@ -1,195 +1,148 @@
-# PBPK-ABM Thesis Model (5-FU / Tumor Microenvironment)
+# PBPK-ABM Thesis Model
 
-A research-focused PhysiCell-based modeling repository for integrated PBPK + ABM simulation, parameter exploration, and post-processing workflows (MATLAB + Python).
+[![PhysiCell](https://img.shields.io/badge/engine-PhysiCell%201.14.2-005f73)](https://github.com/MathCancer/PhysiCell)
+[![Language](https://img.shields.io/badge/core-C%2B%2B%20%7C%20MATLAB%20%7C%20Python-0a9396)](#technology-stack)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-94d2bd)](LICENSE)
 
-This repository is tailored to your thesis-specific model structure, configuration files, scripts, and analysis pipeline.
+Integrated pharmacokinetic and agent-based simulation for **5-FU treatment dynamics** in the tumor microenvironment, combining:
 
----
+- PhysiCell/BioFVM simulation core (C++)
+- PBPK and analysis workflows (MATLAB)
+- high-throughput post-processing and export tooling (Python)
 
-## Overview
+This repository is structured to support both scientific review (reproducibility, citation, model traceability) and engineering review (software quality, automation, maintainability).
 
-This project extends a PhysiCell codebase into a custom, end-to-end modeling workflow that includes:
+## Why This Repository Matters
 
-- custom C++ simulation logic in `main.cpp` and `custom_modules/`
-- scenario configuration under `config/`
-- simulation orchestration scripts (`run_sim.sh`, `run_array.sh`, `run_MC.sh`)
-- MATLAB analysis and plotting scripts (`run5FU_PBPK_Simulation.m`, `analyze_batch_simulations.m`, etc.)
-- Python export utilities for converting PhysiCell outputs to analysis-ready tables (`export_outputs_to_excel.py`)
+This project demonstrates an end-to-end computational oncology workflow:
 
-The goal is fast, reproducible simulation studies for 5-FU dynamics and tumor behavior analysis.
+- translating biological hypotheses into executable simulation models
+- integrating mechanistic PBPK and multicellular ABM pipelines
+- scaling experiments through batch and cluster workflows
+- building analysis outputs suitable for publication and dissertation defense
 
----
+For academic reviewers, this repo emphasizes methodological transparency.
+For industry/hiring reviewers, it highlights practical scientific software engineering across C++, MATLAB, Python, reproducibility, and data workflow design.
 
-## Key Capabilities
+## Highlights
 
-- **Integrated PBPK-ABM workflow** for treatment and tumor response studies.
-- **Batch execution support** for parameter sweeps and repeated runs.
-- **Monte Carlo / sensitivity scripts** for uncertainty exploration.
-- **Automated CSV export pipeline** from `output*.xml` (via `pyMCDS` parsing).
-- **Publication-oriented plotting utilities** and figure styling helpers.
+- **Hybrid PBPK-ABM modeling** for 5-FU transport, metabolism, and tumor exposure.
+- **Circadian-aware PK support** via dosing and metabolism timing workflows.
+- **Batch and Monte Carlo execution** using cluster-friendly scripts.
+- **Multi-format analysis outputs** from XML snapshots to aligned CSV tables.
+- **Publication-oriented figure tooling** and reproducible analysis helpers.
 
----
+## Repository Map
 
-## Repository Structure (high level)
+| Path | Purpose |
+|---|---|
+| `main.cpp` | PhysiCell simulation entrypoint and runtime loop |
+| `custom_modules/` | Model-specific ABM logic and substrate effects |
+| `config/` | XML/csv settings, rules, and simulation configuration |
+| `run5FU_PBPK_Simulation.m` | Core PBPK simulation and PK metric generation |
+| `export_outputs_to_excel.py` | Extracts `output*.xml` into analysis-ready CSVs |
+| `tests/`, `unit_tests/` | Validation assets and reference test material |
+| `run_sim.sh`, `run_array.sh`, `run_MC.sh` | HPC/SLURM execution scripts |
+| `RUN5FU_PBPK_DISSERTATION_GUIDE.md` | Methods-focused guide for dissertation reporting |
 
-- `main.cpp`, `main-backup.cpp`  
-  Main simulation entry points.
-- `custom_modules/`  
-  Project-specific cell rules and simulation logic.
-- `config/`  
-  PhysiCell settings, cell definitions, and rules tables.
-- `core/`, `BioFVM/`, `modules/`, `addons/`  
-  Engine / framework internals and optional integrations.
-- `output/`  
-  Default simulation outputs.
-- `export_outputs_to_excel.py`  
-  Converts PhysiCell outputs to time-aligned CSV summaries.
-- MATLAB scripts in repo root (`*.m`)  
-  PBPK simulation, diagnostics, post-processing, and plotting.
+## Technology Stack
 
----
-
-## Requirements
-
-### Core simulation
-
-- C++ compiler with OpenMP support
-- `make`
-- PhysiCell-compatible build toolchain
-
-### Python export pipeline
-
-- Python 3.10+ (tested in your environment with newer Python as well)
-- `numpy`, `pandas`
-- `pcdl` (optional; script auto-falls back to local `beta/pyMCDS.py` if unavailable)
-
-### MATLAB workflow
-
-- MATLAB for PBPK scripts, analyses, and plotting
-
----
+- C++11 with OpenMP (`make`-based build)
+- MATLAB (PBPK simulation, diagnostics, plotting)
+- Python 3.10+ (`numpy`, `pandas`, optional `pcdl`)
+- PhysiCell/BioFVM framework foundation
 
 ## Quick Start
 
-### 1) Build simulation
+### 1. Build the simulation binary
 
 ```bash
 make
 ```
 
-### 2) Run simulation
+### 2. Run with default configuration
 
 ```bash
-./project
+./project ./config/PhysiCell_settings.xml
 ```
 
-(Executable name depends on your active Makefile target/config.)
+### 3. Export simulation outputs to CSV
 
-### 3) Export PhysiCell outputs to CSV
-
-From extracted output folder:
+From extracted output folders:
 
 ```bash
 python export_outputs_to_excel.py --folder simulation_results_2 --outdir Physicell_results_2
 ```
 
-From zip and persist extraction folder:
+From zip archives (persistent extraction enabled):
 
 ```bash
 python export_outputs_to_excel.py --zip simulation_results_2.zip --extract-zip-to-folder --outdir Physicell_results_2
 ```
 
----
-
-## Fast Export / Performance Options
-
-`export_outputs_to_excel.py` supports speed-oriented flags for large studies:
-
-- `--every-nth N` : process every Nth timestep
-- `--max-files N` : cap number of processed XML files
-- `--workers N` : parallel processing workers
-- `--fast-mode` : skip expensive microenvironment/spatial/attribute stats
-
-Example (fast smoke test):
+Performance-oriented export example:
 
 ```bash
 python export_outputs_to_excel.py --folder simulation_results_2 --every-nth 5 --max-files 20 --workers 4 --fast-mode --outdir Physicell_results_fast
 ```
 
----
+## Reproducible Workflow
 
-## Typical Analysis Workflow
+1. Build and run PhysiCell experiments from versioned config inputs.
+2. Export XML outputs to normalized CSV artifacts.
+3. Run PBPK and aggregate analyses in MATLAB.
+4. Generate publication/dissertation figures and metrics.
+5. Archive run metadata: command, parameters, environment, commit hash.
 
-1. Run simulation(s) to generate PhysiCell outputs.
-2. Export time-aligned CSVs using `export_outputs_to_excel.py`.
-3. Run MATLAB analysis scripts for summary statistics and visualizations.
-4. Generate publication figures with helper scripts:
-   - `set_publication_figure_style.m`
-   - `save_publication_figure.m`
-   - `MC_5FU_publication_helpers.m`
+## Running on HPC
 
----
+SLURM scripts are included for parallel and high-throughput execution:
 
-## Reproducibility Notes
+- `run_sim.sh`: single optimized simulation run
+- `run_array.sh`: array jobs for repeated scenario execution
+- `run_MC.sh`: Monte Carlo sensitivity workflow
 
-- Keep scenario-specific inputs under `config/` version-controlled.
-- Use explicit output directories per run batch.
-- Archive run metadata (date, parameters, script command, commit hash) with results.
-- Prefer scripted runs (`run_array.sh`, `run_MC.sh`) over manual execution for sweeps.
+Before cluster submission, verify account/partition/module settings in each script.
 
----
+## Quality and Testing
 
-## Troubleshooting
-
-### Python parser import issues (`pcdl`)
-
-If `pcdl` fails to import dependencies, the exporter falls back automatically to local `beta/pyMCDS.py`.
-
-### Large zip extraction interruptions
-
-If zip extraction is slow/interrupted, extract once to folder and run with `--folder` mode to avoid repeated extraction.
-
-### Performance constraints
-
-Start conservative (`--workers 2`) and increase gradually based on RAM/CPU and dataset size.
-
----
-
-## Attribution and Upstream Contributions
-
-This repository is built on top of the **PhysiCell** ecosystem and includes adapted framework components.
-
-Please acknowledge PhysiCell in derivative scientific work:
-
-- A. Ghaffarizadeh, R. Heiland, S. H. Friedman, S. M. Mumenthaler, P. Macklin,  
-  *PhysiCell: an Open Source Physics-Based Cell Simulator for Multicellular Systems*,  
-  PLoS Computational Biology 14(2): e1005991 (2018).  
-  DOI: https://doi.org/10.1371/journal.pcbi.1005991
-
-Upstream project:
-
-- PhysiCell: https://github.com/MathCancer/PhysiCell
-
-This README intentionally focuses on your thesis-specific model and workflow while preserving explicit credit to upstream contributors.
-
----
+- GitHub Actions workflows are available in `.github/workflows/` for build/test automation.
+- Additional MATLAB checks and benchmark-style tests are available in root scripts and test folders.
+- Use smoke tests for large datasets with exporter options `--max-files`, `--every-nth`, and `--workers`.
 
 ## Citation
 
-If this repository is used in reports, thesis chapters, or publications, include:
+If you use this repository in academic work:
 
-- the thesis/project citation details
-- the PhysiCell core citation above
-- any domain-specific model references in `CITATION.txt`
+- cite this project using `CITATION.cff`
+- cite PhysiCell and BioFVM as listed in `CITATION.txt`
+- include dissertation-specific methodological references where relevant
 
----
+## License and Third-Party Notice
 
-## Contact / Project Notes
+This repository is distributed under the **BSD 3-Clause License**. See `LICENSE`.
 
-For internal project usage, consider maintaining:
+It includes and extends components from PhysiCell/BioFVM ecosystems; corresponding notices are retained in:
 
-- a changelog of experimental scenarios
-- a run registry (parameter sets, seed strategy, commit hash)
-- a short methods note linking scripts to figures/tables
+- `licenses/PhysiCell.txt`
+- `licenses/BioFVM.txt`
+- `licenses/MaBoSS.txt`
+- `licenses/pugixml.txt`
 
-This keeps thesis results auditable and easier to defend/reproduce.
+## Professional Review Checklist
+
+For collaborators, examiners, or hiring reviewers, start with:
+
+1. `README.md` for architecture and workflow orientation
+2. `RUN5FU_PBPK_DISSERTATION_GUIDE.md` for methods detail
+3. `export_outputs_to_excel.py` and `run5FU_PBPK_Simulation.m` for analysis pipeline depth
+4. `.github/workflows/tests.yml` for automated verification scope
+
+## Contact
+
+For reproducibility questions, feature suggestions, or collaboration, open a GitHub issue with:
+
+- scenario/config details
+- command used
+- expected vs observed behavior
+- relevant logs or output snippets

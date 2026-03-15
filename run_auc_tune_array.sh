@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=auc_tune_wp2
-#SBATCH --output=slurm_auc_tune_%A_%a.out
-#SBATCH --error=slurm_auc_tune_%A_%a.err
+#SBATCH --output=output_%A_%a.txt
+#SBATCH --error=error_%A_%a.txt
 #SBATCH --array=1-8
 #SBATCH --account=student
 #SBATCH --partition=amd_student

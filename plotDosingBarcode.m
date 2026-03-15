@@ -196,6 +196,7 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
 
     % --- Publication-oriented panel sizing (one slot in an A4 4x2 layout) ---
     panelSizeCm = getA4GridPanelSizeCm(4, 2);
+    panelSizeCm = enforceMinimumExportSize(panelSizeCm, [11.0 8.0]);
     fig = figure('Color', 'w', ...
                  'Name', 'Dosing Barcode', 'NumberTitle', 'off', ...
                  'Visible', 'on', ...
@@ -290,20 +291,20 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
         yyaxis(ax, 'left');
         ylim(ax, [0 1.08 * maxWindowDose]);
         setDoseAxisTicks(ax, maxWindowDose);
-        ylabel(ax, 'Infusion/window value', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+        ylabel(ax, 'Infusion mg/min', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
 
         yyaxis(ax, 'right');
         ylim(ax, [0 1.08 * maxBolusDose]);
         setDoseAxisTicks(ax, maxBolusDose);
-        ylabel(ax, 'Bolus dose', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+        ylabel(ax, 'Bolus dose / mg', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
     elseif hasWindowDose
         ylim(ax, [0 1.08 * maxWindowDose]);
         setDoseAxisTicks(ax, maxWindowDose);
-        ylabel(ax, 'Infusion/window value', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+        ylabel(ax, 'Infusion mg/min', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
     else
         ylim(ax, [0 1.08 * maxBolusDose]);
         setDoseAxisTicks(ax, maxBolusDose);
-        ylabel(ax, 'Bolus dose', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
+        ylabel(ax, 'Bolus dose / mg', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
     end
 
     if ~bothDoseTypes
@@ -357,7 +358,8 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
         yyaxis(ax, 'left');
     end
 
-    exportgraphics(fig, outputPath, 'Resolution', 600);
+    prepareAxesForExport(ax, showLegend);
+    exportgraphics(fig, outputPath, 'Resolution', 600, 'BackgroundColor', 'white');
     fprintf('Saved barcode plot: %s\n', outputPath);
     fprintf('Total dose: %.3f mg\n', doseSummary.totalDose_mg);
     fprintf('Total dose/day: %.3f mg/day (span %.3f days)\n', doseSummary.totalDosePerDay_mg_day, doseSummary.span_days);
@@ -419,6 +421,35 @@ function panelSizeCm = getA4GridPanelSizeCm(nRows, nCols)
     tileW = usableW / nCols;
     tileH = usableH / nRows;
     panelSizeCm = [tileW, tileH];
+end
+
+function panelSizeCm = enforceMinimumExportSize(panelSizeCm, minSizeCm)
+    panelSizeCm(1) = max(panelSizeCm(1), minSizeCm(1));
+    panelSizeCm(2) = max(panelSizeCm(2), minSizeCm(2));
+end
+
+function prepareAxesForExport(ax, showLegend)
+    % Let MATLAB resolve text extents before computing insets.
+    drawnow;
+
+    inset = ax.TightInset;
+    leftPad = max(0.12, inset(1) + 0.03);
+    bottomPad = max(0.12, inset(2) + 0.04);
+    rightPad = max(0.08, inset(3) + 0.03);
+    topPad = max(0.10, inset(4) + 0.05);
+
+    if showLegend
+        topPad = max(topPad, 0.18);
+    end
+
+    newWidth = max(0.50, 1 - leftPad - rightPad);
+    newHeight = max(0.48, 1 - bottomPad - topPad);
+
+    ax.Units = 'normalized';
+    ax.PositionConstraint = 'innerposition';
+    ax.Position = [leftPad, bottomPad, newWidth, newHeight];
+
+    drawnow;
 end
 
 function scheduleLabel = makeScheduleLabel(baseName)

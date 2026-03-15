@@ -1,0 +1,2 @@
+start_time_min,end_time_min,dosing_type,dose_amount,infusion_rate,amplitude,frequency_per_min,mean_rate,custom_function,custom_params
+1000,8200,continuous,0,0.6,0,0,0,,

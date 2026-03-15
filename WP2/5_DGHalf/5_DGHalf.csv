@@ -1,0 +1,9 @@
+start_time_min,end_time_min,dosing_type,dose_amount,infusion_rate,amplitude,frequency_per_min,mean_rate,custom_function,custom_params
+1060,1060,bolus,346,0,0,0,0,,
+1060,1720,continuous,0,0.7864,0,0,0,,
+1780,1780,bolus,346,0,0,0,0,,
+1780,2440,continuous,0,0.7864,0,0,0,,
+2500,2500,bolus,346,0,0,0,0,,
+2500,3160,continuous,0,0.7864,0,0,0,,
+3220,3220,bolus,346,0,0,0,0,,
+3220,3880,continuous,0,0.7864,0,0,0,,

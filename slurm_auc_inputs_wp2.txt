@@ -1,0 +1,10 @@
+# One CSV input per line for run_auc_tune_array.sh.
+# Include only primary schedule inputs (not derived *_AUCtuned_* outputs).
+WP2/1_Hourly/1_Hourly.csv
+WP2/2_Square/2_Square.csv
+WP2/3_Three/3_Three.csv
+WP2/4_Chrono10/4_Chrono10.csv
+WP2/5_DGHalf/5_DGHalf.csv
+WP2/6_Cont5/6_Cont5.csv
+WP2/7_Cont2/7_Cont2.csv
+WP2/8_Bihourly/8_Bihourly.csv

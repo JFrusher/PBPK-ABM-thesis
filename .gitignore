@@ -56,6 +56,7 @@ slurm-*.out
 !/SECURITY.md
 !/CONTRIBUTING.md
 !/CODE_OF_CONDUCT.md
+!/slurm_auc_inputs_wp2.txt
 
 # Explicitly ban the heavy stuff just in case
 *.csv
@@ -68,3 +69,7 @@ MC_results/
 
 # Always track everything in config/
 !/config/**
+
+# Track all WP2 assets (inputs + generated artifacts) for reproducible tuning history
+!/WP2/
+!/WP2/**

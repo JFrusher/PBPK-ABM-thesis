@@ -6,8 +6,8 @@
 % 2) Or call from MATLAB command window:
 %      compare_two_physicell_dirs("physicell_csvs_untreated", "physicell_csvs_treated")
 
-DIR_A = "Sim_results_8_csv";
-DIR_B = "Sim_results_9a_csv";
+DIR_A = "WP1UT_CSV";
+DIR_B = "WP2S1_CSV";
 LABEL_A = "Untreated";
 LABEL_B = "Treated With de Gramont";
 OUT_SUBDIR = "comparison_figures_png2";

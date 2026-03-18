@@ -36,6 +36,10 @@ Flags:
     Drop rows with `time_min < M` from all output tables, then rebase remaining
     time and shift the earliest point to a tiny positive value (to avoid exactly
     zero in downstream curve fitting). Useful for removing warm-up periods.
+- `--regimen-end-minutes M`
+    Dosing regimen end time in minutes (original simulation timeline). Adds
+    curve-fitter columns centered around regimen end for easier cross-regimen
+    comparison (`time_from_regimen_end_min`).
 
 Primary output CSVs:
 - `summary_by_time.csv`
@@ -1168,6 +1172,11 @@ def build_curve_fitter_highlights(curve_df: pd.DataFrame) -> pd.DataFrame:
     df = curve_df.sort_values("time_min").drop_duplicates(subset=["time_min"], keep="last").reset_index(drop=True)
     highlights = pd.DataFrame({"time_min": pd.to_numeric(df["time_min"], errors="coerce")})
 
+    if "regimen_end_time_min" in df.columns:
+        highlights["regimen_end_time_min"] = pd.to_numeric(df["regimen_end_time_min"], errors="coerce")
+    if "time_from_regimen_end_min" in df.columns:
+        highlights["time_from_regimen_end_min"] = pd.to_numeric(df["time_from_regimen_end_min"], errors="coerce")
+
     total_cells = pd.to_numeric(df.get("total_cells", pd.Series(np.nan, index=df.index)), errors="coerce").to_numpy(dtype=float)
     live_cells = pd.to_numeric(df.get("live_cells", pd.Series(np.nan, index=df.index)), errors="coerce").to_numpy(dtype=float)
     dead_cells = pd.to_numeric(df.get("dead_cells", pd.Series(np.nan, index=df.index)), errors="coerce").to_numpy(dtype=float)
@@ -1399,6 +1408,18 @@ def build_curve_fitter_column_dictionary(curve_df: pd.DataFrame) -> pd.DataFrame
     for col in curve_df.columns:
         if col == "time_min":
             rows.append({"column": col, "category": "time", "description": "Simulation time in minutes."})
+        elif col == "regimen_end_time_min":
+            rows.append({
+                "column": col,
+                "category": "time",
+                "description": "Dosing regimen end time (minutes) after applying export timeline transforms.",
+            })
+        elif col == "time_from_regimen_end_min":
+            rows.append({
+                "column": col,
+                "category": "time",
+                "description": "Time in minutes relative to regimen end (negative=before, positive=after).",
+            })
         elif col in {"xml_file", "total_cells", "live_cells", "dead_cells"}:
             desc_map = {
                 "xml_file": "Source PhysiCell output XML filename.",
@@ -1461,6 +1482,7 @@ def build_curve_fitter_stats_markdown(
         "## What this table is",
         "",
         "- One row per simulation timepoint (`time_min`).",
+        "- Optional aligned regimen-time columns (`regimen_end_time_min`, `time_from_regimen_end_min`) appear when `--regimen-end-minutes` is provided.",
         "- Built by merging summary, type, phase, type-phase, density, spatial, region, microenvironment, and attribute statistics.",
         f"- Current export size: **{total_rows} rows x {total_cols} columns**.",
         "",
@@ -1470,6 +1492,7 @@ def build_curve_fitter_stats_markdown(
         "",
         "Primary trajectory variables:",
         "- `total_cells`, `live_cells`, `dead_cells`",
+        "- `time_from_regimen_end_min` (if `--regimen-end-minutes` is set; negative=before end, positive=after end)",
         "- `net_growth_cells_per_min` (same concept as dN/dt used in `matlab_compare_outputs.m`)",
         "- `specific_growth_rate_per_hour`, `doubling_time_hours`, `halving_time_hours`",
         "- `live_fraction`, `dead_fraction`, `dead_to_live_ratio`",
@@ -1634,11 +1657,41 @@ def shift_time_axis_to_positive_start(df: pd.DataFrame, target_start: float = TI
     return out
 
 
+def compute_time_shift_to_positive_start(df: pd.DataFrame, target_start: float = TIME_MIN_START_POSITIVE) -> float:
+    if df is None or df.empty or "time_min" not in df.columns:
+        return 0.0
+
+    times = pd.to_numeric(df["time_min"], errors="coerce")
+    finite_times = times[np.isfinite(times)]
+    if finite_times.empty:
+        return 0.0
+
+    min_time = float(finite_times.min())
+    return float(target_start) - min_time
+
+
+def add_regimen_relative_time_columns(
+    df: pd.DataFrame,
+    regimen_end_minutes_aligned: float | None,
+) -> pd.DataFrame:
+    if df is None or df.empty or "time_min" not in df.columns:
+        return df
+
+    out = df.copy()
+    if regimen_end_minutes_aligned is None:
+        return out
+
+    out["regimen_end_time_min"] = float(regimen_end_minutes_aligned)
+    out["time_from_regimen_end_min"] = pd.to_numeric(out["time_min"], errors="coerce") - float(regimen_end_minutes_aligned)
+    return out
+
+
 def main():
     pyMCDS = load_pyMCDS()
     constructor_mode = resolve_mcds_constructor_mode(pyMCDS)
 
     parser = argparse.ArgumentParser(description="Export PhysiCell outputs to CSV summaries.")
+    parser.add_argument("-help", action="help", help="Show this help message and exit.")
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--zip", dest="zip_path", help="Path to zip with output*.xml files")
     input_group.add_argument("--folder", dest="folder_path", help="Path to folder with output*.xml files")
@@ -1676,6 +1729,15 @@ def main():
         default=0.0,
         help="Drop rows before this time; final export shifts earliest time_min to a tiny positive value.",
     )
+    parser.add_argument(
+        "--regimen-end-minutes",
+        type=float,
+        default=None,
+        help=(
+            "Dosing regimen end time in minutes on the original simulation timeline. "
+            "Adds regimen-end aligned time columns to curve_fitter_table/highlights."
+        ),
+    )
 
     args = parser.parse_args()
     if args.every_nth < 1:
@@ -1686,6 +1748,8 @@ def main():
         raise ValueError("--workers must be >= 1")
     if args.skip_initial_minutes < 0:
         raise ValueError("--skip-initial-minutes must be >= 0")
+    if args.regimen_end_minutes is not None and args.regimen_end_minutes < 0:
+        raise ValueError("--regimen-end-minutes must be >= 0 when provided")
 
     out_dir = output_dir_name(args.out_dir)
 
@@ -1931,6 +1995,14 @@ def main():
                 "Reduce the skip value or verify simulation duration."
             )
 
+    time_shift_to_positive = compute_time_shift_to_positive_start(summary_df)
+    regimen_end_minutes_aligned = None
+    if args.regimen_end_minutes is not None:
+        regimen_end_minutes_aligned = float(args.regimen_end_minutes)
+        if args.skip_initial_minutes > 0:
+            regimen_end_minutes_aligned -= float(args.skip_initial_minutes)
+        regimen_end_minutes_aligned += time_shift_to_positive
+
     print(
         f"Shifting timeline so earliest time_min is a tiny positive value ({TIME_MIN_START_POSITIVE:g}) to avoid t<=0 issues in downstream curve fitting."
     )
@@ -1997,8 +2069,14 @@ def main():
         {"key": "workers", "value": args.workers},
         {"key": "fast_mode", "value": args.fast_mode},
         {"key": "skip_initial_minutes", "value": args.skip_initial_minutes},
+        {"key": "regimen_end_minutes_input", "value": args.regimen_end_minutes if args.regimen_end_minutes is not None else ""},
+        {
+            "key": "regimen_end_minutes_aligned",
+            "value": regimen_end_minutes_aligned if regimen_end_minutes_aligned is not None else "",
+        },
         {"key": "time_rebased_after_skip", "value": args.skip_initial_minutes > 0},
         {"key": "time_axis_target_start_min", "value": TIME_MIN_START_POSITIVE},
+        {"key": "time_axis_applied_shift_min", "value": time_shift_to_positive},
         {"key": "constructor_mode", "value": constructor_mode},
         {"key": "xml_files_selected", "value": len(xml_files)},
         {"key": "xml_files_failed", "value": len(failed_xml_files)},
@@ -2049,6 +2127,7 @@ def main():
         append_warning(warnings, "Failed to build curve_fitter_table", exc)
 
     if not curve_fitter_df.empty:
+        curve_fitter_df = add_regimen_relative_time_columns(curve_fitter_df, regimen_end_minutes_aligned)
         safe_write_dataframe(curve_fitter_df, out_dir / "curve_fitter_table.csv", warnings, "curve_fitter_table")
 
         try:

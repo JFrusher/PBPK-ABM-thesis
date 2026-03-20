@@ -1,4 +1,4 @@
-function MC_5FU_PK_sensitivity(n_samples, output_dir, hpc_minimal_output)
+function MC_5FU_PK_sensitivity(n_samples, output_dir, hpc_minimal_output, seed_override, chunk_mode)
 % MC_5FU_PK_sensitivity  Monte Carlo sensitivity analysis wrapper for 5-FU PBPK
 %
 % Sections:
@@ -10,9 +10,11 @@ function MC_5FU_PK_sensitivity(n_samples, output_dir, hpc_minimal_output)
 % 6. % VISUALIZATION
 % 7. % FILE SAVING
 %
-% Usage: MC_5FU_PK_sensitivity()                           % uses defaults
-%        MC_5FU_PK_sensitivity(200, './out/')              % custom n_samples and output dir
-%        MC_5FU_PK_sensitivity(200, './out/', true)        % HPC minimal console output
+% Usage: MC_5FU_PK_sensitivity()                                  % uses defaults
+%        MC_5FU_PK_sensitivity(200, './out/')                     % custom n_samples and output dir
+%        MC_5FU_PK_sensitivity(200, './out/', true)               % HPC minimal console output
+%        MC_5FU_PK_sensitivity(200, './out/', true, 1234)         % custom RNG seed
+%        MC_5FU_PK_sensitivity(200, './out/', true, 1234, true)   % chunk mode (skip heavy post-processing)
 %
 % The script performs Latin Hypercube sampling for 10 parameters, runs the
 % simulator for each sample in parallel, extracts AUC and Cmax from the
@@ -36,8 +38,19 @@ MAX_WORKERS = 20;              % Upper cap for local/HPC workers (auto-clamped t
 if nargin < 3 || isempty(hpc_minimal_output)
     hpc_minimal_output = false;
 end
+if nargin < 4 || isempty(seed_override)
+    seed_override = 42;
+end
+if nargin < 5 || isempty(chunk_mode)
+    chunk_mode = false;
+end
 HPC_MINIMAL_OUTPUT = logical(hpc_minimal_output); % true = very light console output for HPC logs
+CHUNK_MODE = logical(chunk_mode);                  % true = save lightweight chunk outputs and return early
 QUIET_MODE = QUIET_MODE || HPC_MINIMAL_OUTPUT;
+
+if CHUNK_MODE
+    CHECKPOINT_ENABLED = false; % each chunk is independent; avoid cross-chunk checkpoint coupling
+end
 
 % ===== PK TARGET CONFIG (easy to edit) =====
 % mode: 'auto' (infer from Cmax scale), 'bolus', or 'infusion'
@@ -122,8 +135,8 @@ end
 analysis_date_str = datestr(now, 'yyyy-mm-dd');
 fig_counter = 0;  % Global figure counter for numbering
 
-% Reproducible seed
-seed = 42;
+% Reproducible seed (overridable for chunked HPC arrays)
+seed = double(seed_override);
 rng(seed, 'twister');
 
 % Number of parameters
@@ -194,6 +207,10 @@ end
 % Load checkpoint if available (from most recent run folder)
 % Note: loadCheckpoint will look for checkpoints in most recent timestamped folder
 [~, completed_runs, checkpoint_file] = loadCheckpoint(fileparts(output_dir), n_samples);
+
+if CHUNK_MODE
+    completed_runs = false(n_samples, 1);
+end
 
 % Check for resume scenario
 if any(completed_runs)
@@ -785,6 +802,34 @@ stats.mean.AUC = mean(AUC);
 stats.ci95.AUC = 1.96 * std(AUC) / sqrt(n_good);
 stats.mean.Cmax = mean(Cmax);
 stats.ci95.Cmax = 1.96 * std(Cmax) / sqrt(n_good);
+
+if CHUNK_MODE
+    fprintf('MC: Chunk mode enabled - writing lightweight outputs and skipping heavy post-processing.\n');
+    chunk_timestamp = char(string(datetime('now', 'Format', 'yyyyMMdd_HHmmss')));
+
+    chunk_table = params_table;
+    chunk_table.AUC_mg_h_L = AUC;
+    chunk_table.Cmax_uM = Cmax;
+    chunk_table.sample_local_index = (1:height(chunk_table))';
+
+    chunk_csv = fullfile(output_dir, sprintf('MC_chunk_outputs_%s.csv', chunk_timestamp));
+    writetable(chunk_table, chunk_csv);
+
+    chunk_meta = struct();
+    chunk_meta.timestamp = chunk_timestamp;
+    chunk_meta.seed = seed;
+    chunk_meta.n_samples_requested = n_samples;
+    chunk_meta.n_samples_valid = n_good;
+    chunk_meta.n_samples_failed = num_failed;
+    chunk_meta.mean_AUC = stats.mean.AUC;
+    chunk_meta.mean_Cmax = stats.mean.Cmax;
+
+    matfile = fullfile(output_dir, sprintf('MC_5FU_PK_chunk_%s.mat', chunk_timestamp));
+    save(matfile, 'chunk_meta', 'chunk_table', '-v7.3');
+
+    fprintf('MC: Chunk outputs saved to %s\n', output_dir);
+    return;
+end
 
 % -----------------------------
 % 5) SENSITIVITY ANALYSIS

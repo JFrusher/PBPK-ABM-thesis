@@ -122,8 +122,6 @@ def load_pyMCDS():
         return module.pyMCDS
 
 
-
-
 OUTPUT_RE = re.compile(r"output(\d+)\.xml$", re.IGNORECASE)
 TYPE_COLUMNS = ["cell_type_name", "cell_type"]
 PHASE_COLUMNS = ["cycle_phase", "current_phase", "phase", "state"]

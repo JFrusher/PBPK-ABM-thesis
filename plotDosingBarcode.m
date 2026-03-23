@@ -320,11 +320,6 @@ function [outputPath, doseSummary] = plotDosingBarcode(csvFilename, outputPath, 
 
     xlabel(ax, 'Time', 'FontSize', baseFont + 1, 'FontWeight', 'bold');
 
-    [~, titleName, ~] = fileparts(csvFilename);
-    scheduleLabel = makeScheduleLabel(titleName);
-    title(ax, sprintf('Dosing Schedule: %s', scheduleLabel), ...
-            'FontSize', baseFont + 2, 'FontWeight', 'bold', 'Interpreter', 'none');
-
     legendHandles = gobjects(0);
     legendLabels = {};
     if ~isempty(hCont)

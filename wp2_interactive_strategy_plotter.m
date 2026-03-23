@@ -279,6 +279,7 @@ on_plot();
         plotCount = 0;
         skipped = strings(0,1);
         xAll = [];
+        yAll = [];
 
         for i = 1:numel(selected)
             idx = selected(i);
@@ -315,6 +316,7 @@ on_plot();
                 'LineWidth', 2.0);
             plotCount = plotCount + 1;
             xAll = [xAll; x(:)]; %#ok<AGROW>
+            yAll = [yAll; y(:)]; %#ok<AGROW>
         end
 
         customX = strtrim(xLabelEdit.Value);
@@ -341,11 +343,7 @@ on_plot();
 
         if plotCount > 0
             legend(ax, 'Location', 'best');
-        end
-
-        isTimeAxis = is_time_minutes_axis(xName, customX);
-        if isTimeAxis && ~isempty(xAll)
-            apply_day_ticks(ax, xAll);
+            apply_tight_limits(ax, xAll, yAll);
         end
 
         hold(ax, 'off');
@@ -409,21 +407,21 @@ on_plot();
             error('Nothing to export: select valid strategies and x/y columns first.');
         end
 
-        % Publication sizing: 0.8 of text-column region with practical height.
-        textRegionWidthIn = 6.8;
-        figWidthIn = 0.8 * textRegionWidthIn;
-        figHeightIn = max(3.6, 0.68 * figWidthIn);
+        % Fixed publication export size.
+        figWidthIn = 14 / 2.54;
+        figHeightIn = 7.4 / 2.54;
 
         figOut = figure('Color', 'w', 'Units', 'inches', 'Position', [1 1 figWidthIn figHeightIn]);
         figOut.PaperUnits = 'inches';
         figOut.PaperSize = [figWidthIn figHeightIn];
         figOut.PaperPosition = [0 0 figWidthIn figHeightIn];
 
-        axOut = axes(figOut, 'Position', [0.13 0.17 0.80 0.75]);
+        axOut = axes(figOut, 'Position', [0.10 0.12 0.86 0.83]);
         hold(axOut, 'on');
 
         plotted = 0;
         xAll = [];
+        yAll = [];
         for i = 1:numel(selected)
             idx = selected(i);
             s = strategies(idx);
@@ -456,6 +454,7 @@ on_plot();
 
             plotted = plotted + 1;
             xAll = [xAll; x(:)]; %#ok<AGROW>
+            yAll = [yAll; y(:)]; %#ok<AGROW>
         end
 
         customX = strtrim(xLabelEdit.Value);
@@ -481,14 +480,45 @@ on_plot();
         title(axOut, plotTitle, 'Interpreter', tInterp);
         if plotted > 0
             legend(axOut, 'Location', 'best');
-        end
-
-        isTimeAxis = is_time_minutes_axis(xName, customX);
-        if isTimeAxis && ~isempty(xAll)
-            apply_day_ticks(axOut, xAll);
+            apply_tight_limits(axOut, xAll, yAll);
         end
 
         hold(axOut, 'off');
+        fit_axes_inside_figure(axOut);
+    end
+
+    function fit_axes_inside_figure(axHandle)
+        % Minimize whitespace while guaranteeing labels/titles/ticks stay inside figure.
+        set(axHandle, 'Units', 'normalized');
+        drawnow;
+
+        ti = get(axHandle, 'TightInset');
+        if isempty(ti) || numel(ti) ~= 4
+            return;
+        end
+
+        % Small safety padding so export rasterization doesn't clip glyphs.
+        pad = 0.012;
+
+        left = max(ti(1) + pad, 0.04);
+        bottom = max(ti(2) + pad, 0.04);
+        right = max(ti(3) + pad, 0.04);
+        top = max(ti(4) + pad, 0.04);
+
+        width = max(1 - left - right, 0.1);
+        height = max(1 - bottom - top, 0.1);
+        set(axHandle, 'Position', [left, bottom, width, height]);
+
+        % Re-evaluate once after repositioning; keep the tighter safe fit.
+        drawnow;
+        ti2 = get(axHandle, 'TightInset');
+        left2 = max(ti2(1) + pad, left);
+        bottom2 = max(ti2(2) + pad, bottom);
+        right2 = max(ti2(3) + pad, right);
+        top2 = max(ti2(4) + pad, top);
+        width2 = max(1 - left2 - right2, 0.1);
+        height2 = max(1 - bottom2 - top2, 0.1);
+        set(axHandle, 'Position', [left2, bottom2, width2, height2]);
     end
 
 end
@@ -732,83 +762,6 @@ x = nan(size(v));
 x = double(x);
 end
 
-function tf = is_time_minutes_axis(xName, xLabel)
-txt = lower(char(string(xName) + " " + string(xLabel)));
-
-% Restrict detection to explicit time/minute cues to avoid false positives
-% on unrelated variables that happen to contain "min".
-patterns = {
-    '(^|[^a-z])time([^a-z]|$)', ...
-    '(^|[^a-z])minute(s)?([^a-z]|$)', ...
-    '(^|[^a-z])min([^a-z]|$)', ...
-    'time_?min', ...
-    'elapsed_?min', ...
-    'time_?minutes'
-    };
-
-tf = false;
-for i = 1:numel(patterns)
-    if ~isempty(regexp(txt, patterns{i}, 'once'))
-        tf = true;
-        return;
-    end
-end
-end
-
-function apply_day_ticks(axHandle, xData)
-if isempty(xData)
-    return;
-end
-
-xData = xData(isfinite(xData));
-if isempty(xData)
-    return;
-end
-
-xMin = min(xData);
-xMax = max(xData);
-if ~isfinite(xMin) || ~isfinite(xMax) || xMax <= xMin
-    return;
-end
-
-spanMin = xMax - xMin;
-
-% Only convert to day ticks for ranges that are at least ~half a day.
-if spanMin < 720
-    return;
-end
-
-startTick = ceil(xMin / 1440) * 1440;
-endTick = floor(xMax / 1440) * 1440;
-ticks = startTick:1440:endTick;
-
-% Ensure at least two informative ticks inside the visible range.
-if numel(ticks) < 2
-    ticks = linspace(xMin, xMax, 3);
-end
-
-ticks = unique(ticks(:)');
-ticks = ticks(ticks >= xMin & ticks <= xMax);
-if numel(ticks) < 2
-    ticks = [xMin, xMax];
-end
-
-dayVals = ticks ./ 1440;
-dayRounded = round(dayVals);
-isIntegerDay = abs(dayVals - dayRounded) < 1e-10;
-
-xticks(axHandle, ticks);
-labels = strings(size(dayVals));
-for i = 1:numel(dayVals)
-    if isIntegerDay(i)
-        labels(i) = sprintf('%d', dayRounded(i));
-    else
-        labels(i) = sprintf('%.2f', dayVals(i));
-    end
-end
-xticklabels(axHandle, labels);
-end
-
 function [outText, interp] = resolve_label_text(customText, fallbackText)
 customText = char(string(customText));
 fallbackText = char(string(fallbackText));
@@ -827,6 +780,38 @@ if contains(customText, '\\') || contains(customText, '^') || contains(customTex
 else
     interp = 'none';
 end
+end
+
+function apply_tight_limits(axHandle, xAll, yAll)
+if isempty(xAll) || isempty(yAll)
+    return;
+end
+
+xAll = xAll(isfinite(xAll));
+yAll = yAll(isfinite(yAll));
+if isempty(xAll) || isempty(yAll)
+    return;
+end
+
+xMin = min(xAll);
+xMax = max(xAll);
+yMin = min(yAll);
+yMax = max(yAll);
+
+if xMax == xMin
+    xPad = max(1, abs(xMin) * 0.02);
+else
+    xPad = 0;
+end
+
+if yMax == yMin
+    yPad = max(1, abs(yMin) * 0.02);
+else
+    yPad = 0;
+end
+
+xlim(axHandle, [xMin - xPad, xMax + xPad]);
+ylim(axHandle, [yMin - yPad, yMax + yPad]);
 end
 
 function d = strategy_dirs_from_root(wp2Root)

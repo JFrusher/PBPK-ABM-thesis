@@ -19,7 +19,7 @@ function results = analyze_MC10k_comprehensive(mergedCsvPath, outDir, options)
 % Output files are written into outDir.
 
 if nargin < 1 || isempty(mergedCsvPath)
-    mergedCsvPath = fullfile('MC_results', 'MC10k_chunks', 'MC_10k_merged_outputs.csv');
+    mergedCsvPath = fullfile('MC_10k_merged_outputs.csv');
 end
 
 if nargin < 2 || isempty(outDir)
@@ -138,7 +138,13 @@ def.cmax_target = [300 500];
 def.top_n_tornado = 10;
 def.top_n_scatter = 6;
 def.export_png_dpi = 400;
-def.fig_size_cm = [14 10];
+% Publication sizing policy (A4-aware): width is a fraction of A4 width,
+% height is proportional to width (with minimum height guard).
+def.a4_width_cm = 21.0;
+def.figure_width_fraction_a4 = 0.8;
+def.figure_height_to_width_ratio = 0.62;
+def.figure_min_height_cm = 7.4;
+def.fig_size_cm = []; % auto-computed from publication sizing policy unless explicitly set
 def.color_auc = [0.80 0.25 0.25];
 def.color_cmax = [0.20 0.45 0.80];
 def.color_joint = [0.10 0.10 0.10];
@@ -149,6 +155,13 @@ for i = 1:numel(f)
     if ~isfield(options, f{i}) || isempty(options.(f{i}))
         options.(f{i}) = def.(f{i});
     end
+end
+
+% Derive final figure size if not explicitly provided.
+if ~isfield(options, 'fig_size_cm') || isempty(options.fig_size_cm)
+    w = options.a4_width_cm * options.figure_width_fraction_a4;
+    h = max(options.figure_min_height_cm, w * options.figure_height_to_width_ratio);
+    options.fig_size_cm = [w h];
 end
 end
 
@@ -230,11 +243,11 @@ bothIn = aucIn & cmaxIn;
 
 targetTbl = table();
 targetTbl.metric = ["AUC"; "Cmax"; "Both"];
-targetTbl.target_range = [...
+targetTbl.target_range = string([
     sprintf('[%.3g, %.3g]', options.auc_target(1), options.auc_target(2)); ...
     sprintf('[%.3g, %.3g]', options.cmax_target(1), options.cmax_target(2)); ...
-    sprintf('AUC in range AND Cmax in range') ...
-    ];
+    "AUC in range AND Cmax in range" ...
+    ]);
 targetTbl.percent_attained = [100*mean(aucIn); 100*mean(cmaxIn); 100*mean(bothIn)];
 targetTbl.n = repmat(numel(auc), 3, 1);
 end
@@ -305,7 +318,10 @@ hasViolin = exist('violinplot', 'file') == 2;
 
 nexttile;
 if hasViolin
-    violinplot(T.AUC_mg_h_L, [], 'ViolinColor', options.color_auc);
+    ok = try_violinplot(T.AUC_mg_h_L, options.color_auc);
+    if ~ok
+        boxchart(ones(height(T),1), T.AUC_mg_h_L, 'BoxFaceColor', options.color_auc);
+    end
 else
     boxchart(ones(height(T),1), T.AUC_mg_h_L, 'BoxFaceColor', options.color_auc);
 end
@@ -313,7 +329,10 @@ title('AUC'); ylabel('AUC (mg h/L)'); xticks([]); grid on;
 
 nexttile;
 if hasViolin
-    violinplot(T.Cmax_uM, [], 'ViolinColor', options.color_cmax);
+    ok = try_violinplot(T.Cmax_uM, options.color_cmax);
+    if ~ok
+        boxchart(ones(height(T),1), T.Cmax_uM, 'BoxFaceColor', options.color_cmax);
+    end
 else
     boxchart(ones(height(T),1), T.Cmax_uM, 'BoxFaceColor', options.color_cmax);
 end
@@ -434,11 +453,15 @@ colormap(parula);
 colorbar;
 caxis([-1 1]);
 
-ticklabels(strrep(vars, '_', '\_'));
-yticklabels(strrep(vars, '_', '\_'));
-xtickangle(45);
-set(gca, 'TickLabelInterpreter', 'tex');
+tickLbls = cellstr(strrep(vars, '_', '\_'));
 set(gca, 'XTick', 1:numel(vars), 'YTick', 1:numel(vars));
+set(gca, 'XTickLabel', tickLbls, 'YTickLabel', tickLbls);
+set(gca, 'TickLabelInterpreter', 'tex');
+try
+    xtickangle(45);
+catch
+    % Older MATLAB releases may not support xtickangle.
+end
 title('Spearman Correlation Matrix');
 
 save_fig(h, outDir, '08_correlation_heatmap', options);
@@ -478,6 +501,11 @@ end
 function h = new_fig(name, options)
 h = figure('Name', name, 'Color', 'w', 'Units', 'centimeters', ...
     'Position', [1 1 options.fig_size_cm(1) options.fig_size_cm(2)]);
+
+% Keep on-screen and export canvas consistent.
+set(h, 'PaperUnits', 'centimeters');
+set(h, 'PaperSize', options.fig_size_cm);
+set(h, 'PaperPosition', [0 0 options.fig_size_cm(1) options.fig_size_cm(2)]);
 end
 
 function save_fig(h, outDir, baseName, options)
@@ -487,8 +515,77 @@ end
 pngPath = fullfile(outDir, [baseName '.png']);
 figPath = fullfile(outDir, [baseName '.fig']);
 
+% Re-apply publication size in case figure was resized interactively.
+set(h, 'Units', 'centimeters');
+pos = get(h, 'Position');
+pos(3:4) = options.fig_size_cm;
+set(h, 'Position', pos);
+set(h, 'PaperUnits', 'centimeters');
+set(h, 'PaperSize', options.fig_size_cm);
+set(h, 'PaperPosition', [0 0 options.fig_size_cm(1) options.fig_size_cm(2)]);
+
+% Disable axes toolbars/interactions before export to avoid toolbar artifacts.
+disable_axes_toolbars(h);
+
 exportgraphics(h, pngPath, 'Resolution', options.export_png_dpi);
 savefig(h, figPath);
+end
+
+function ok = try_violinplot(y, colorVal)
+ok = false;
+y = y(isfinite(y));
+if isempty(y)
+    return;
+end
+
+% Different violinplot implementations accept different signatures.
+try
+    violinplot(y);
+    style_last_violin(colorVal);
+    ok = true;
+    return;
+catch
+end
+
+try
+    violinplot(y, ones(size(y)));
+    style_last_violin(colorVal);
+    ok = true;
+    return;
+catch
+end
+
+try
+    violinplot(y, ones(size(y)), 'ViolinColor', colorVal);
+    ok = true;
+catch
+    ok = false;
+end
+end
+
+function style_last_violin(colorVal)
+try
+    ax = gca;
+    h = findobj(ax, 'Type', 'Patch');
+    if ~isempty(h)
+        set(h(1), 'FaceColor', colorVal, 'EdgeColor', 'none', 'FaceAlpha', 0.5);
+    end
+catch
+    % Styling is best-effort only.
+end
+end
+
+function disable_axes_toolbars(figHandle)
+axs = findall(figHandle, 'Type', 'axes');
+for i = 1:numel(axs)
+    try
+        if isprop(axs(i), 'Toolbar') && ~isempty(axs(i).Toolbar)
+            axs(i).Toolbar.Visible = 'off';
+        end
+    catch
+        % Keep export resilient across MATLAB versions.
+    end
+end
 end
 
 function save_qc_report_txt(p, T, summaryTbl, targetTbl, results, options)
@@ -517,14 +614,14 @@ fprintf(fid, '  Cmax target range: [%.3g, %.3g]\n\n', options.cmax_target(1), op
 fprintf(fid, 'Summary statistics\n');
 for i = 1:height(summaryTbl)
     fprintf(fid, '  %s: mean=%.4g, median=%.4g, IQR=[%.4g, %.4g], p05=%.4g, p95=%.4g\n', ...
-        summaryTbl.metric{i}, summaryTbl.mean(i), summaryTbl.median(i), summaryTbl.q25(i), summaryTbl.q75(i), ...
+        char(summaryTbl.metric(i)), summaryTbl.mean(i), summaryTbl.median(i), summaryTbl.q25(i), summaryTbl.q75(i), ...
         summaryTbl.p05(i), summaryTbl.p95(i));
 end
 fprintf(fid, '\n');
 
 fprintf(fid, 'Target attainment\n');
 for i = 1:height(targetTbl)
-    fprintf(fid, '  %s: %.2f%%\n', targetTbl.metric{i}, targetTbl.percent_attained(i));
+    fprintf(fid, '  %s: %.2f%%\n', char(targetTbl.metric(i)), targetTbl.percent_attained(i));
 end
 fprintf(fid, '\n');
 

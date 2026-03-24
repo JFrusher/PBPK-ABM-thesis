@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -37,11 +38,12 @@ def main() -> None:
     for p in csv_files:
         df = pd.read_csv(p)
         df["chunk_file"] = str(p)
-        # Try to recover task id from parent folder naming task_00001
-        parent = p.parent.name
-        if parent.startswith("task_"):
+        # Recover task id from anywhere in the full path (supports nested timestamp folders).
+        # Example: .../task_00001/20260324_123000/MC_chunk_outputs_....csv
+        m = re.search(r"task_(\d+)", str(p))
+        if m:
             try:
-                df["chunk_task_id"] = int(parent.split("_", 1)[1])
+                df["chunk_task_id"] = int(m.group(1))
             except ValueError:
                 df["chunk_task_id"] = pd.NA
         else:

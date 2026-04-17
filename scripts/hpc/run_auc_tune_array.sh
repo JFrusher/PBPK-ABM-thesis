@@ -26,7 +26,7 @@ TOLERANCE="${TOLERANCE:-0.1}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-20}"
 DISABLE_PLOTS="${DISABLE_PLOTS:-1}"
 CLEANUP_ON_CONVERGED="${CLEANUP_ON_CONVERGED:-1}"
-INPUT_LIST="${INPUT_LIST:-slurm_auc_inputs_wp2.txt}"
+INPUT_LIST="${INPUT_LIST:-scripts/hpc/slurm_auc_inputs_wp2.txt}"
 
 if [[ ! -f "$INPUT_LIST" ]]; then
   echo "ERROR: Input list not found: $INPUT_LIST"

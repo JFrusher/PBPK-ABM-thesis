@@ -24,10 +24,10 @@ function results = compare_MC10k_regimens(referenceCsv, infusionCsv, outDir, opt
 %   compare_MC10k_regimens(refCsv, infCsv, 'comparison_pack', options)
 
 if nargin < 1 || isempty(referenceCsv)
-    referenceCsv = fullfile('MC_results', 'MC10k_chunks', 'MC_10k_merged_outputs.csv');
+    referenceCsv = fullfile('MC_10k_merged_outputs.csv');
 end
 if nargin < 2 || isempty(infusionCsv)
-    infusionCsv = fullfile('MC_results', 'MC10k_infusion_chunks', 'MC_10k_merged_outputs.csv');
+    infusionCsv = fullfile('MC_10k_merged_outputs_cont.csv');
 end
 if nargin < 3 || isempty(outDir)
     stamp = char(string(datetime('now', 'Format', 'yyyyMMdd_HHmmss')));
@@ -118,15 +118,25 @@ writetable(pctTblA, fullfile(outDir, 'percentile_shift_auc.csv'));
 writetable(pctTblC, fullfile(outDir, 'percentile_shift_cmax.csv'));
 
 % Figure pack
-fig_endpoint_distributions(R, I, outDir, options);
-fig_violin_or_box(R, I, outDir, options);
-fig_auc_cmax_scatter(R, I, outDir, options);
-fig_target_attainment(targetTbl, outDir, options);
-fig_percentile_shift(pctTblA, pctTblC, outDir, options);
+run_timed_step('Figure 01: endpoint distributions', @() fig_endpoint_distributions(R, I, outDir, options));
+run_timed_step('Figure 02: violin/box comparison', @() fig_violin_or_box(R, I, outDir, options));
+run_timed_step('Figure 03: AUC-Cmax scatter', @() fig_auc_cmax_scatter(R, I, outDir, options));
+run_timed_step('Figure 04: target attainment', @() fig_target_attainment(targetTbl, outDir, options));
+run_timed_step('Figure 05: percentile shift', @() fig_percentile_shift(pctTblA, pctTblC, outDir, options));
+
+vCentralCol = find_vcentral_column(R, I);
+if ~isempty(vCentralCol)
+    run_timed_step('Figure 08: v_central vs Cmax with curve fits', ...
+        @() fig_vcentral_cmax_curvefit(R, I, vCentralCol, outDir, options));
+    write_vcentral_curvefit_summary(fullfile(outDir, 'v_central_curvefit_summary.txt'), R, I, vCentralCol, options);
+else
+    warning('compare_MC10k_regimens:MissingVCentral', ...
+        'No common v_central-like column found across both regimen tables. Skipping v_central curve-fit figure.');
+end
 
 if ~isempty(commonParams)
-    fig_tornado_delta(sensAucDelta, sensCmaxDelta, outDir, options);
-    fig_correlation_delta_heatmap(R, I, commonParams, outDir, options);
+    run_timed_step('Figure 06: sensitivity comparison bars', @() fig_tornado_delta(sensAucDelta, sensCmaxDelta, outDir, options));
+    run_timed_step('Figure 07: correlation delta heatmap', @() fig_correlation_delta_heatmap(R, I, commonParams, outDir, options));
 end
 
 write_report(fullfile(outDir, 'comparison_report.txt'), targetTbl, pctTblA, pctTblC, results, options);
@@ -139,18 +149,33 @@ end
 
 function options = apply_defaults(options)
 def = struct();
-def.reference_name = 'Reference regimen';
+def.reference_name = 'Bolus-dominant regimen';
 def.infusion_name = 'Infusion-dominant regimen';
 def.auc_target = [20 30];
 def.cmax_target = [300 500];
+def.auto_frame_cmax = true;
+def.axis_margin_fraction = 0.08;
 def.alpha = 0.05;
 def.top_n_tornado = 12;
 def.percentiles = (1:1:99)';
 def.export_png_dpi = 450;
+def.hist_bins = 40;
+def.hist_normalization = 'probability';
+def.cmax_ecdf_scale_method = 'median_iqr';
+def.export_pdf = false;
+def.pdf_content_type = 'image';
+def.base_font_size = 10;
+def.label_font_size = 10;
+def.title_font_size = 11;
+def.legend_font_size = 9;
+def.axis_line_width = 0.9;
+def.line_width = 1.6;
+def.tick_label_max_chars = 26;
+def.max_heatmap_vars = 18;
 
 % Publication sizing, A4-aware.
 def.a4_width_cm = 21.0;
-def.figure_width_fraction_a4 = 0.8;
+def.figure_width_fraction_a4 = 0.9;
 def.figure_height_to_width_ratio = 0.62;
 def.figure_min_height_cm = 7.4;
 def.fig_size_cm = [];
@@ -164,8 +189,25 @@ for i = 1:numel(ndef)
 end
 
 if ~isfield(options, 'fig_size_cm') || isempty(options.fig_size_cm)
+    if ~isfinite(options.a4_width_cm) || options.a4_width_cm <= 0
+        options.a4_width_cm = 21.0;
+    end
+    if ~isfinite(options.figure_width_fraction_a4) || options.figure_width_fraction_a4 <= 0
+        options.figure_width_fraction_a4 = 0.8;
+    end
+    if ~isfinite(options.figure_height_to_width_ratio) || options.figure_height_to_width_ratio <= 0
+        options.figure_height_to_width_ratio = 0.62;
+    end
+    if ~isfinite(options.figure_min_height_cm) || options.figure_min_height_cm <= 0
+        options.figure_min_height_cm = 7.4;
+    end
+
     w = options.a4_width_cm * options.figure_width_fraction_a4;
     h = max(options.figure_min_height_cm, w * options.figure_height_to_width_ratio);
+
+    % Final hard guard to prevent zero/negative figure dimensions.
+    w = max(w, 1.0);
+    h = max(h, 1.0);
     options.fig_size_cm = [w h];
 end
 
@@ -324,15 +366,14 @@ T.relative_shift_percent = 100 * T.absolute_shift ./ max(abs(T.reference_value),
 end
 
 function h = fig_endpoint_distributions(R, I, outDir, options)
-h = new_pub_fig('Endpoint Comparison Distributions', options);
+h = new_pub_fig('Endpoint Comparison Distributions', options, [1.2 1.15]);
 tiledlayout(2,2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-histogram(R.AUC_mg_h_L, 40, 'FaceColor', options.color_ref, 'EdgeColor', 'none', 'FaceAlpha', 0.5); hold on;
-histogram(I.AUC_mg_h_L, 40, 'FaceColor', options.color_inf, 'EdgeColor', 'none', 'FaceAlpha', 0.5);
+plot_hist_overlay_common_binwidth(R.AUC_mg_h_L, I.AUC_mg_h_L, options);
 xline(options.auc_target(1), '--k'); xline(options.auc_target(2), '--k');
 legend(options.reference_name, options.infusion_name, 'Location', 'best');
-title('AUC Histogram Overlay'); xlabel('AUC (mg h/L)'); ylabel('Count'); grid on;
+title('AUC Histogram Overlay'); xlabel('AUC (mg h/L)'); ylabel('Probability'); grid on;
 
 nexttile;
 ecdf(R.AUC_mg_h_L); hold on; ecdf(I.AUC_mg_h_L);
@@ -340,22 +381,31 @@ legend(options.reference_name, options.infusion_name, 'Location', 'best');
 title('AUC CDF Comparison'); xlabel('AUC (mg h/L)'); ylabel('F(x)'); grid on;
 
 nexttile;
-histogram(R.Cmax_uM, 40, 'FaceColor', options.color_ref, 'EdgeColor', 'none', 'FaceAlpha', 0.5); hold on;
-histogram(I.Cmax_uM, 40, 'FaceColor', options.color_inf, 'EdgeColor', 'none', 'FaceAlpha', 0.5);
+plot_hist_overlay_common_binwidth(R.Cmax_uM, I.Cmax_uM, options);
 xline(options.cmax_target(1), '--k'); xline(options.cmax_target(2), '--k');
+if options.auto_frame_cmax
+    xlim(compute_auto_limits([R.Cmax_uM; I.Cmax_uM], options.axis_margin_fraction, true));
+end
 legend(options.reference_name, options.infusion_name, 'Location', 'best');
-title('Cmax Histogram Overlay'); xlabel('Cmax (uM)'); ylabel('Count'); grid on;
+title('Cmax Histogram Overlay'); xlabel('Cmax (uM)'); ylabel('Probability'); grid on;
 
 nexttile;
-ecdf(R.Cmax_uM); hold on; ecdf(I.Cmax_uM);
+plot_cmax_ecdf_comparable(R.Cmax_uM, I.Cmax_uM, options);
 legend(options.reference_name, options.infusion_name, 'Location', 'best');
-title('Cmax CDF Comparison'); xlabel('Cmax (uM)'); ylabel('F(x)'); grid on;
+title('Cmax CDF (Comparable Scale)');
+switch lower(string(options.cmax_ecdf_scale_method))
+    case "median_iqr"
+        xlabel('Scaled Cmax: (Cmax - median) / IQR');
+    otherwise
+        xlabel('Scaled Cmax');
+end
+ylabel('F(x)'); grid on;
 
 save_pub_fig(h, outDir, '01_endpoint_distribution_comparison', options);
 end
 
 function h = fig_violin_or_box(R, I, outDir, options)
-h = new_pub_fig('Violin Comparison', options);
+h = new_pub_fig('Violin Comparison', options, [1.05 1.0]);
 tiledlayout(1,2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
@@ -364,6 +414,9 @@ title('AUC'); ylabel('AUC (mg h/L)'); grid on;
 
 nexttile;
 plot_violin_or_box_pair(R.Cmax_uM, I.Cmax_uM, options);
+if options.auto_frame_cmax
+    ylim(compute_auto_limits([R.Cmax_uM; I.Cmax_uM], options.axis_margin_fraction, true));
+end
 title('Cmax'); ylabel('Cmax (uM)'); grid on;
 
 save_pub_fig(h, outDir, '02_violin_box_comparison', options);
@@ -426,7 +479,7 @@ set(gca, 'XTick', [1 2], 'XTickLabel', {options.reference_name, options.infusion
 end
 
 function h = fig_auc_cmax_scatter(R, I, outDir, options)
-h = new_pub_fig('AUC Cmax Scatter Comparison', options);
+h = new_pub_fig('AUC Cmax Scatter Comparison', options, [1.2 1.0]);
 tiledlayout(1,2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
@@ -434,6 +487,9 @@ scatter(R.AUC_mg_h_L, R.Cmax_uM, 7, 'MarkerFaceColor', options.color_ref, ...
     'MarkerEdgeColor', 'none', 'MarkerFaceAlpha', 0.18); hold on;
 xline(options.auc_target(1), '--k'); xline(options.auc_target(2), '--k');
 yline(options.cmax_target(1), '--k'); yline(options.cmax_target(2), '--k');
+if options.auto_frame_cmax
+    ylim(compute_auto_limits(R.Cmax_uM, options.axis_margin_fraction, true));
+end
 title(options.reference_name, 'Interpreter', 'none');
 xlabel('AUC (mg h/L)'); ylabel('Cmax (uM)'); grid on;
 
@@ -442,6 +498,9 @@ scatter(I.AUC_mg_h_L, I.Cmax_uM, 7, 'MarkerFaceColor', options.color_inf, ...
     'MarkerEdgeColor', 'none', 'MarkerFaceAlpha', 0.18); hold on;
 xline(options.auc_target(1), '--k'); xline(options.auc_target(2), '--k');
 yline(options.cmax_target(1), '--k'); yline(options.cmax_target(2), '--k');
+if options.auto_frame_cmax
+    ylim(compute_auto_limits(I.Cmax_uM, options.axis_margin_fraction, true));
+end
 title(options.infusion_name, 'Interpreter', 'none');
 xlabel('AUC (mg h/L)'); ylabel('Cmax (uM)'); grid on;
 
@@ -449,7 +508,7 @@ save_pub_fig(h, outDir, '03_auc_cmax_scatter_comparison', options);
 end
 
 function h = fig_target_attainment(T, outDir, options)
-h = new_pub_fig('Target Attainment Comparison', options);
+h = new_pub_fig('Target Attainment Comparison', options, [0.8 0.95]);
 X = [T.reference_percent, T.infusion_percent];
 bar(categorical(T.metric), X, 0.72);
 colormap([options.color_ref; options.color_inf]);
@@ -466,7 +525,7 @@ save_pub_fig(h, outDir, '04_target_attainment_comparison', options);
 end
 
 function h = fig_percentile_shift(pA, pC, outDir, options)
-h = new_pub_fig('Percentile Shift Emergent Trends', options);
+h = new_pub_fig('Percentile Shift Emergent Trends', options, [1.05 1.0]);
 tiledlayout(1,2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
@@ -489,25 +548,52 @@ n = min(options.top_n_tornado, height(sA));
 a = sA(1:n,:);
 c = sC(1:min(options.top_n_tornado, height(sC)), :);
 
-h = new_pub_fig('Sensitivity Delta Tornado', options);
+% Keep only finite deltas to avoid plotting/export edge-case failures.
+if ~isempty(a)
+    a = a(isfinite(a.delta_abs_rho), :);
+end
+if ~isempty(c)
+    c = c(isfinite(c.delta_abs_rho), :);
+end
+
+h = new_pub_fig('Sensitivity Delta Tornado', options, [1.25 1.1]);
 tiledlayout(1,2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-barh(categorical(a.parameter), a.delta_abs_rho, 'FaceColor', [0.45 0.45 0.45]);
-set(gca, 'YDir', 'reverse');
-xlabel('Delta |rho| (Infusion - Reference)');
-title('AUC Driver Shift'); grid on;
+if isempty(a)
+    axis off;
+    text(0.5, 0.5, 'No finite AUC delta values to plot', 'HorizontalAlignment', 'center');
+else
+    [refA, infA] = get_regimen_abs_rho_columns(a);
+    barh(categorical(a.parameter), [refA infA], 'grouped');
+    colormap(gca, [options.color_ref; options.color_inf]);
+    set(gca, 'YDir', 'reverse');
+    legend(options.reference_name, options.infusion_name, 'Location', 'best', 'Interpreter', 'none');
+end
+xlabel('|rho|');
+title('AUC Driver Comparison'); grid on;
 
 nexttile;
-barh(categorical(c.parameter), c.delta_abs_rho, 'FaceColor', [0.25 0.25 0.25]);
-set(gca, 'YDir', 'reverse');
-xlabel('Delta |rho| (Infusion - Reference)');
-title('Cmax Driver Shift'); grid on;
+if isempty(c)
+    axis off;
+    text(0.5, 0.5, 'No finite Cmax delta values to plot', 'HorizontalAlignment', 'center');
+else
+    [refC, infC] = get_regimen_abs_rho_columns(c);
+    barh(categorical(c.parameter), [refC infC], 'grouped');
+    colormap(gca, [options.color_ref; options.color_inf]);
+    set(gca, 'YDir', 'reverse');
+    legend(options.reference_name, options.infusion_name, 'Location', 'best', 'Interpreter', 'none');
+end
+xlabel('|rho|');
+title('Cmax Driver Comparison'); grid on;
 
 save_pub_fig(h, outDir, '06_sensitivity_delta_tornado', options);
 end
 
 function h = fig_correlation_delta_heatmap(R, I, params, outDir, options)
+if numel(params) > options.max_heatmap_vars
+    params = params(1:options.max_heatmap_vars);
+end
 vars = [params(:)', {'AUC_mg_h_L','Cmax_uM'}];
 XR = nan(height(R), numel(vars));
 XI = nan(height(I), numel(vars));
@@ -519,14 +605,15 @@ RR = corr(XR, 'Type', 'Spearman', 'Rows', 'pairwise');
 RI = corr(XI, 'Type', 'Spearman', 'Rows', 'pairwise');
 D = RI - RR;
 
-h = new_pub_fig('Correlation Delta Heatmap', options);
+h = new_pub_fig('Correlation Delta Heatmap', options, [1.25 1.25]);
 imagesc(D);
 axis square;
 colormap(parula);
 colorbar;
 caxis([-0.5 0.5]);
 
-lbl = cellstr(strrep(vars, '_', '\_'));
+lbl = shorten_labels(vars, options.tick_label_max_chars);
+lbl = cellstr(strrep(lbl, '_', '\_'));
 set(gca, 'XTick', 1:numel(vars), 'YTick', 1:numel(vars), 'XTickLabel', lbl, 'YTickLabel', lbl, ...
     'TickLabelInterpreter', 'tex');
 try
@@ -538,12 +625,18 @@ title('Spearman Correlation Shift (Infusion - Reference)');
 save_pub_fig(h, outDir, '07_correlation_delta_heatmap', options);
 end
 
-function h = new_pub_fig(figName, options)
+function h = new_pub_fig(figName, options, sizeScale)
+if nargin < 3 || isempty(sizeScale)
+    sizeScale = [1 1];
+end
+figSize = options.fig_size_cm .* sizeScale;
 h = figure('Name', figName, 'Color', 'w', 'Units', 'centimeters', ...
-    'Position', [1 1 options.fig_size_cm(1) options.fig_size_cm(2)]);
+    'Position', [1 1 figSize(1) figSize(2)]);
 set(h, 'PaperUnits', 'centimeters');
-set(h, 'PaperSize', options.fig_size_cm);
-set(h, 'PaperPosition', [0 0 options.fig_size_cm(1) options.fig_size_cm(2)]);
+set(h, 'PaperSize', figSize);
+set(h, 'PaperPosition', [0 0 figSize(1) figSize(2)]);
+set(findall(h, '-property', 'FontSize'), 'FontSize', options.base_font_size);
+set(findall(h, '-property', 'LineWidth'), 'LineWidth', options.axis_line_width);
 end
 
 function save_pub_fig(h, outDir, baseName, options)
@@ -555,15 +648,53 @@ figPath = fullfile(outDir, [baseName '.fig']);
 
 set(h, 'Units', 'centimeters');
 pos = get(h, 'Position');
-pos(3:4) = options.fig_size_cm;
+figSize = pos(3:4);
 set(h, 'Position', pos);
 set(h, 'PaperUnits', 'centimeters');
-set(h, 'PaperSize', options.fig_size_cm);
-set(h, 'PaperPosition', [0 0 options.fig_size_cm(1) options.fig_size_cm(2)]);
+set(h, 'PaperSize', figSize);
+set(h, 'PaperPosition', [0 0 figSize(1) figSize(2)]);
+
+style_axes_publication(h, options);
 
 disable_axes_toolbars(h);
-exportgraphics(h, pngPath, 'Resolution', options.export_png_dpi);
-savefig(h, figPath);
+try
+    exportgraphics(h, pngPath, 'Resolution', options.export_png_dpi);
+catch ME
+    warning('compare_MC10k_regimens:ExportGraphicsFailed', ...
+        'exportgraphics failed for %s (%s). Falling back to print().', baseName, ME.message);
+    try
+        print(h, pngPath, '-dpng', sprintf('-r%d', options.export_png_dpi));
+    catch ME2
+        warning('compare_MC10k_regimens:PrintFallbackFailed', ...
+            'PNG export fallback also failed for %s: %s', baseName, ME2.message);
+    end
+end
+
+try
+    savefig(h, figPath);
+catch ME
+    warning('compare_MC10k_regimens:SaveFigFailed', ...
+        'savefig failed for %s: %s', baseName, ME.message);
+end
+
+if isfield(options, 'export_pdf') && options.export_pdf
+    pdfPath = fullfile(outDir, [baseName '.pdf']);
+    ct = 'image';
+    if isfield(options, 'pdf_content_type') && ~isempty(options.pdf_content_type)
+        ct = char(lower(string(options.pdf_content_type)));
+        if ~strcmp(ct, 'image') && ~strcmp(ct, 'vector')
+            ct = 'image';
+        end
+    end
+    try
+        exportgraphics(h, pdfPath, 'ContentType', ct);
+    catch
+        try
+            print(h, pdfPath, '-dpdf', '-painters');
+        catch
+        end
+    end
+end
 end
 
 function disable_axes_toolbars(figHandle)
@@ -575,6 +706,353 @@ for i = 1:numel(axs)
         end
     catch
     end
+end
+end
+
+function lim = compute_auto_limits(x, marginFrac, clampToZero) %#ok<DEFNU>
+if nargin < 2 || isempty(marginFrac)
+    marginFrac = 0.08;
+end
+if nargin < 3
+    clampToZero = false;
+end
+
+x = to_num(x);
+x = x(isfinite(x));
+if isempty(x)
+    lim = [0 1];
+    return;
+end
+
+xMin = min(x);
+xMax = max(x);
+if xMax <= xMin
+    span = max(abs(xMax), 1);
+    pad = 0.1 * span;
+else
+    span = xMax - xMin;
+    pad = max(span * marginFrac, eps(max(abs([xMin, xMax]))));
+end
+
+lo = xMin - pad;
+hi = xMax + pad;
+if clampToZero
+    lo = max(0, lo);
+end
+if hi <= lo
+    hi = lo + 1;
+end
+
+lim = [lo hi];
+end
+
+function plot_hist_overlay_common_binwidth(xRef, xInf, options)
+xRef = to_num(xRef);
+xInf = to_num(xInf);
+xRef = xRef(isfinite(xRef));
+xInf = xInf(isfinite(xInf));
+
+if isempty(xRef) || isempty(xInf)
+    histogram([xRef; xInf], options.hist_bins, 'FaceColor', options.color_ref, ...
+        'EdgeColor', 'none', 'FaceAlpha', 0.5, 'Normalization', options.hist_normalization);
+    return;
+end
+
+nBins = max(1, round(options.hist_bins));
+bwRef = safe_bin_width(xRef, nBins);
+bwInf = safe_bin_width(xInf, nBins);
+bw = min([bwRef bwInf]);
+
+xMin = min([xRef; xInf]);
+xMax = max([xRef; xInf]);
+if xMax <= xMin
+    xMax = xMin + 1;
+end
+
+edges = xMin:bw:xMax;
+if numel(edges) < 2 || edges(end) < xMax
+    edges = [edges xMax];
+end
+
+histogram(xRef, 'BinEdges', edges, 'FaceColor', options.color_ref, 'EdgeColor', 'none', ...
+    'FaceAlpha', 0.5, 'Normalization', options.hist_normalization); hold on;
+histogram(xInf, 'BinEdges', edges, 'FaceColor', options.color_inf, 'EdgeColor', 'none', ...
+    'FaceAlpha', 0.5, 'Normalization', options.hist_normalization);
+end
+
+function bw = safe_bin_width(x, nBins)
+xMin = min(x);
+xMax = max(x);
+if xMax <= xMin
+    bw = 1;
+else
+    bw = (xMax - xMin) / nBins;
+    if ~isfinite(bw) || bw <= 0
+        bw = 1;
+    end
+end
+end
+
+function plot_cmax_ecdf_comparable(xRef, xInf, options)
+switch lower(string(options.cmax_ecdf_scale_method))
+    case "median_iqr"
+        xRef = robust_scale(xRef);
+        xInf = robust_scale(xInf);
+    otherwise
+        xRef = to_num(xRef);
+        xInf = to_num(xInf);
+end
+
+xRef = xRef(isfinite(xRef));
+xInf = xInf(isfinite(xInf));
+
+if isempty(xRef) || isempty(xInf)
+    ecdf([xRef; xInf]);
+    return;
+end
+
+ecdf(xRef); hold on;
+ecdf(xInf);
+end
+
+function z = robust_scale(x)
+x = to_num(x);
+x = x(isfinite(x));
+if isempty(x)
+    z = x;
+    return;
+end
+med = median(x);
+iqrVal = iqr(x);
+if ~isfinite(iqrVal) || iqrVal <= 0
+    iqrVal = max(std(x), eps);
+end
+z = (x - med) / iqrVal;
+end
+
+function [refAbsRho, infAbsRho] = get_regimen_abs_rho_columns(T)
+names = T.Properties.VariableNames;
+rhoCols = names(endsWith(names, '_rho', 'IgnoreCase', true));
+rhoCols = setdiff(rhoCols, {'delta_rho'}, 'stable');
+
+if numel(rhoCols) < 2
+    refAbsRho = nan(height(T), 1);
+    infAbsRho = nan(height(T), 1);
+    return;
+end
+
+refAbsRho = abs(to_num(T.(rhoCols{1})));
+infAbsRho = abs(to_num(T.(rhoCols{2})));
+end
+
+function out = shorten_labels(in, maxChars)
+out = string(in);
+for i = 1:numel(out)
+    if strlength(out(i)) > maxChars
+        out(i) = extractBefore(out(i), maxChars - 2) + "..";
+    end
+end
+end
+
+function style_axes_publication(figHandle, options)
+axs = findall(figHandle, 'Type', 'axes');
+for i = 1:numel(axs)
+    try
+        set(axs(i), 'FontSize', options.base_font_size, 'LineWidth', options.axis_line_width, 'Box', 'off');
+        if ~isempty(axs(i).XLabel)
+            axs(i).XLabel.FontSize = options.label_font_size;
+        end
+        if ~isempty(axs(i).YLabel)
+            axs(i).YLabel.FontSize = options.label_font_size;
+        end
+        if ~isempty(axs(i).Title)
+            axs(i).Title.FontSize = options.title_font_size;
+            axs(i).Title.FontWeight = 'bold';
+        end
+    catch
+    end
+end
+
+lg = findall(figHandle, 'Type', 'Legend');
+for i = 1:numel(lg)
+    try
+        lg(i).FontSize = options.legend_font_size;
+        lg(i).Box = 'off';
+    catch
+    end
+end
+end
+
+function colName = find_vcentral_column(R, I)
+colName = '';
+common = intersect(R.Properties.VariableNames, I.Properties.VariableNames, 'stable');
+if isempty(common)
+    return;
+end
+
+low = lower(string(common));
+preferred = ["v_central", "vcentral", "v_c", "vc", "central_volume", "vcentral_l"];
+for i = 1:numel(preferred)
+    idx = find(low == preferred(i), 1, 'first');
+    if ~isempty(idx)
+        colName = common{idx};
+        return;
+    end
+end
+
+idx = find(contains(low, "central") & (startsWith(low, "v") | contains(low, "volume")), 1, 'first');
+if ~isempty(idx)
+    colName = common{idx};
+end
+end
+
+function h = fig_vcentral_cmax_curvefit(R, I, vCol, outDir, options)
+xR = to_num(R.(vCol));
+yR = to_num(R.Cmax_uM);
+maskR = isfinite(xR) & isfinite(yR);
+xR = xR(maskR); yR = yR(maskR);
+
+xI = to_num(I.(vCol));
+yI = to_num(I.Cmax_uM);
+maskI = isfinite(xI) & isfinite(yI);
+xI = xI(maskI); yI = yI(maskI);
+
+fitR = fit_poly_curve(xR, yR);
+fitI = fit_poly_curve(xI, yI);
+
+xAll = [xR; xI];
+yAll = [yR; yI];
+xLim = compute_auto_limits(xAll, options.axis_margin_fraction, false);
+yLim = compute_auto_limits(yAll, options.axis_margin_fraction, true);
+
+h = new_pub_fig('v_central vs Cmax Curve Fits', options, [1.25 1.0]);
+tiledlayout(1,2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+nexttile;
+scatter(xR, yR, 10, 'MarkerFaceColor', options.color_ref, 'MarkerEdgeColor', 'none', 'MarkerFaceAlpha', 0.2); hold on;
+if fitR.valid
+    plot(fitR.xfit, fitR.yfit, '-', 'Color', options.color_ref, 'LineWidth', 2.0);
+end
+title(options.reference_name, 'Interpreter', 'none');
+xlabel(strrep(vCol, '_', '\_'), 'Interpreter', 'tex');
+ylabel('Cmax (uM)');
+xlim(xLim); ylim(yLim); grid on;
+text(0.03, 0.97, fit_summary_text(fitR), 'Units', 'normalized', 'VerticalAlignment', 'top', ...
+    'BackgroundColor', 'w', 'Margin', 4);
+
+nexttile;
+scatter(xI, yI, 10, 'MarkerFaceColor', options.color_inf, 'MarkerEdgeColor', 'none', 'MarkerFaceAlpha', 0.2); hold on;
+if fitI.valid
+    plot(fitI.xfit, fitI.yfit, '-', 'Color', options.color_inf, 'LineWidth', 2.0);
+end
+title(options.infusion_name, 'Interpreter', 'none');
+xlabel(strrep(vCol, '_', '\_'), 'Interpreter', 'tex');
+ylabel('Cmax (uM)');
+xlim(xLim); ylim(yLim); grid on;
+text(0.03, 0.97, fit_summary_text(fitI), 'Units', 'normalized', 'VerticalAlignment', 'top', ...
+    'BackgroundColor', 'w', 'Margin', 4);
+
+save_pub_fig(h, outDir, '08_v_central_cmax_curvefit_comparison', options);
+end
+
+function fit = fit_poly_curve(x, y)
+fit = struct('valid', false, 'degree', nan, 'coef', nan, 'r2', nan, 'n', numel(x), ...
+    'xfit', [], 'yfit', [], 'rho', nan, 'equation', 'Insufficient data for fit');
+
+if numel(x) < 3 || numel(unique(x)) < 2
+    return;
+end
+
+nUnique = numel(unique(x));
+deg = min(2, nUnique - 1);
+deg = max(1, deg);
+
+p = polyfit(x, y, deg);
+yHat = polyval(p, x);
+ssRes = sum((y - yHat).^2);
+ssTot = sum((y - mean(y)).^2);
+if ssTot <= 0
+    r2 = nan;
+else
+    r2 = 1 - ssRes / ssTot;
+end
+
+xfit = linspace(min(x), max(x), 250);
+yfit = polyval(p, xfit);
+
+try
+    rho = corr(x, y, 'Type', 'Spearman', 'Rows', 'complete');
+catch
+    rho = nan;
+end
+
+fit.valid = true;
+fit.degree = deg;
+fit.coef = p;
+fit.r2 = r2;
+fit.n = numel(x);
+fit.xfit = xfit;
+fit.yfit = yfit;
+fit.rho = rho;
+fit.equation = poly_equation_string(p);
+end
+
+function s = poly_equation_string(p)
+deg = numel(p) - 1;
+if deg == 1
+    s = sprintf('y = %.3g x %+0.3g', p(1), p(2));
+elseif deg == 2
+    s = sprintf('y = %.3g x^2 %+0.3g x %+0.3g', p(1), p(2), p(3));
+else
+    s = 'Polynomial fit';
+end
+end
+
+function t = fit_summary_text(fit)
+if ~fit.valid
+    t = sprintf('n = %d\nNo valid fit', fit.n);
+    return;
+end
+t = sprintf('n = %d\n%s\nR^2 = %.3f\nSpearman rho = %.3f', fit.n, fit.equation, fit.r2, fit.rho);
+end
+
+function write_vcentral_curvefit_summary(outPath, R, I, vCol, options)
+xR = to_num(R.(vCol)); yR = to_num(R.Cmax_uM);
+xI = to_num(I.(vCol)); yI = to_num(I.Cmax_uM);
+maskR = isfinite(xR) & isfinite(yR);
+maskI = isfinite(xI) & isfinite(yI);
+fitR = fit_poly_curve(xR(maskR), yR(maskR));
+fitI = fit_poly_curve(xI(maskI), yI(maskI));
+
+fid = fopen(outPath, 'w');
+if fid < 0
+    warning('compare_MC10k_regimens:VCentralSummaryWriteFailed', 'Could not write %s', outPath);
+    return;
+end
+cleanupObj = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+fprintf(fid, 'v_central Curve-Fit Summary (Cmax outcome)\n');
+fprintf(fid, 'Generated: %s\n\n', char(datetime('now')));
+fprintf(fid, 'Parameter column used: %s\n\n', vCol);
+
+fprintf(fid, '%s\n', char(options.reference_name));
+fprintf(fid, '  n = %d\n', fitR.n);
+fprintf(fid, '  model = degree %d polynomial\n', fitR.degree);
+fprintf(fid, '  equation: %s\n', fitR.equation);
+fprintf(fid, '  R^2 = %.4f\n', fitR.r2);
+fprintf(fid, '  Spearman rho = %.4f\n\n', fitR.rho);
+
+fprintf(fid, '%s\n', char(options.infusion_name));
+fprintf(fid, '  n = %d\n', fitI.n);
+fprintf(fid, '  model = degree %d polynomial\n', fitI.degree);
+fprintf(fid, '  equation: %s\n', fitI.equation);
+fprintf(fid, '  R^2 = %.4f\n', fitI.r2);
+fprintf(fid, '  Spearman rho = %.4f\n\n', fitI.rho);
+
+if isfinite(fitR.rho) && isfinite(fitI.rho)
+    fprintf(fid, 'Interpretation\n');
+    fprintf(fid, '  Absolute association strength difference (|rho| infusion - |rho| reference): %+0.4f\n', ...
+        abs(fitI.rho) - abs(fitR.rho));
 end
 end
 
@@ -621,4 +1099,11 @@ fprintf(fid, '\n');
 
 fprintf(fid, 'Summary statistics table exported to regimen_summary_statistics.csv\n');
 fprintf(fid, 'Target table exported to target_attainment_comparison.csv\n');
+end
+
+function run_timed_step(stepName, fHandle)
+fprintf('[START] %s\n', stepName);
+t = tic;
+fHandle();
+fprintf('[DONE ] %s (%.2f s)\n', stepName, toc(t));
 end

@@ -2,12 +2,12 @@
 # Helper submitter: auto-detects input count and submits matching array range.
 # Usage:
 #   bash submit_auc_tune_wp2.sh
-#   INPUT_LIST=slurm_auc_inputs_wp2.txt TARGET_AUC=30 bash submit_auc_tune_wp2.sh
+#   INPUT_LIST=scripts/hpc/slurm_auc_inputs_wp2.txt TARGET_AUC=30 bash submit_auc_tune_wp2.sh
 
 set -euo pipefail
 
-INPUT_LIST="${INPUT_LIST:-slurm_auc_inputs_wp2.txt}"
-JOB_SCRIPT="${JOB_SCRIPT:-run_auc_tune_array.sh}"
+INPUT_LIST="${INPUT_LIST:-scripts/hpc/slurm_auc_inputs_wp2.txt}"
+JOB_SCRIPT="${JOB_SCRIPT:-scripts/hpc/run_auc_tune_array.sh}"
 
 if [[ ! -f "$INPUT_LIST" ]]; then
   echo "ERROR: Input list not found: $INPUT_LIST"

@@ -23,4 +23,4 @@ RUN_OUT="$SLURM_SUBMIT_DIR/MC_results/Total_Batch"
 mkdir -p "$RUN_OUT"
 
 # Call the function ONCE with the 1000 argument
-matlab -batch "try, MC_5FU_PK_sensitivity(${N_SAMPLES}, '${RUN_OUT}', true); catch ME, disp(getReport(ME,'extended')); exit(1); end; exit(0);"
+matlab -batch "try, addpath(genpath(fullfile(pwd,'matlab'))); MC_5FU_PK_sensitivity(${N_SAMPLES}, '${RUN_OUT}', true); catch ME, disp(getReport(ME,'extended')); exit(1); end; exit(0);"

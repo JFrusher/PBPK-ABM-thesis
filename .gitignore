@@ -45,18 +45,18 @@ slurm-*.out
 !*.py
 !config/*.csv
 !/main.cpp
-!/main-backup.cpp
 !/.gitignore
 !/.github/**
 !*.cff
 !/LICENSE
 !/README.md
-!/CITATION.txt
 !/VERSION.txt
-!/SECURITY.md
-!/CONTRIBUTING.md
-!/CODE_OF_CONDUCT.md
-!/slurm_auc_inputs_wp2.txt
+!/archive/main-backup.cpp
+!/docs/project/CODE_OF_CONDUCT.md
+!/docs/project/CONTRIBUTING.md
+!/docs/project/SECURITY.md
+!/docs/references/CITATION.txt
+!/scripts/hpc/slurm_auc_inputs_wp2.txt
 
 # Explicitly ban the heavy stuff just in case
 *.csv

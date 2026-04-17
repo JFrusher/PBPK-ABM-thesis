@@ -19,7 +19,7 @@ function results = analyze_MC10k_comprehensive(mergedCsvPath, outDir, options)
 % Output files are written into outDir.
 
 if nargin < 1 || isempty(mergedCsvPath)
-    mergedCsvPath = fullfile('MC_10k_merged_outputs.csv');
+    mergedCsvPath = fullfile('MC_10k_merged_outputs_cont.csv');
 end
 
 if nargin < 2 || isempty(outDir)
@@ -135,9 +135,25 @@ function options = apply_default_options(options)
 def = struct();
 def.auc_target = [20 30];
 def.cmax_target = [300 500];
+def.auto_frame_cmax = true;
+def.axis_margin_fraction = 0.08;
 def.top_n_tornado = 10;
 def.top_n_scatter = 6;
 def.export_png_dpi = 400;
+def.export_pdf = true;
+def.pdf_content_type = 'image';
+def.use_exportgraphics = false;
+def.enable_violin = false;
+def.hist_bins = 40;
+def.hist_normalization = 'probability';
+def.base_font_size = 10;
+def.label_font_size = 10;
+def.title_font_size = 11;
+def.legend_font_size = 9;
+def.axis_line_width = 0.9;
+def.line_width = 1.6;
+def.tick_label_max_chars = 24;
+def.max_heatmap_vars = 16;
 % Publication sizing policy (A4-aware): width is a fraction of A4 width,
 % height is proportional to width (with minimum height guard).
 def.a4_width_cm = 21.0;
@@ -275,26 +291,31 @@ sensCmax = sortrows(sensCmax, 'abs_rho', 'descend');
 end
 
 function h = plot_endpoint_distributions(T, outDir, options)
-h = new_fig('Endpoint Distributions', options);
+h = new_fig('Endpoint Distributions', options, [1.05 1.0]);
 tiledlayout(1,2,'Padding','compact','TileSpacing','compact');
 
 nexttile;
-histogram(T.AUC_mg_h_L, 40, 'FaceColor', options.color_auc, 'EdgeColor', 'none');
+histogram(T.AUC_mg_h_L, options.hist_bins, 'FaceColor', options.color_auc, 'EdgeColor', 'none', ...
+    'Normalization', options.hist_normalization);
 xline(options.auc_target(1), '--k', 'AUC target min');
 xline(options.auc_target(2), '--k', 'AUC target max');
-title('AUC Distribution'); xlabel('AUC (mg h/L)'); ylabel('Count'); grid on;
+title('AUC Distribution'); xlabel('AUC (mg h/L)'); ylabel('Probability'); grid on;
 
 nexttile;
-histogram(T.Cmax_uM, 40, 'FaceColor', options.color_cmax, 'EdgeColor', 'none');
+histogram(T.Cmax_uM, options.hist_bins, 'FaceColor', options.color_cmax, 'EdgeColor', 'none', ...
+    'Normalization', options.hist_normalization);
 xline(options.cmax_target(1), '--k', 'Cmax target min');
 xline(options.cmax_target(2), '--k', 'Cmax target max');
-title('Cmax Distribution'); xlabel('Cmax (uM)'); ylabel('Count'); grid on;
+if options.auto_frame_cmax
+    xlim(compute_auto_limits(T.Cmax_uM, options.axis_margin_fraction, true));
+end
+title('Cmax Distribution'); xlabel('Cmax (uM)'); ylabel('Probability'); grid on;
 
 save_fig(h, outDir, '01_endpoint_distributions', options);
 end
 
 function h = plot_endpoint_ecdf(T, outDir, options)
-h = new_fig('Endpoint ECDF', options);
+h = new_fig('Endpoint ECDF', options, [1.05 1.0]);
 tiledlayout(1,2,'Padding','compact','TileSpacing','compact');
 
 nexttile;
@@ -305,16 +326,19 @@ title('AUC CDF'); xlabel('AUC (mg h/L)'); ylabel('F(x)'); grid on;
 nexttile;
 ecdf(T.Cmax_uM); hold on;
 xline(options.cmax_target(1), '--k'); xline(options.cmax_target(2), '--k');
+if options.auto_frame_cmax
+    xlim(compute_auto_limits(T.Cmax_uM, options.axis_margin_fraction, true));
+end
 title('Cmax CDF'); xlabel('Cmax (uM)'); ylabel('F(x)'); grid on;
 
 save_fig(h, outDir, '02_endpoint_ecdf', options);
 end
 
 function h = plot_violin_or_fallback(T, outDir, options)
-h = new_fig('Violin Plots', options);
+h = new_fig('Violin Plots', options, [0.95 1.0]);
 tiledlayout(1,2,'Padding','compact','TileSpacing','compact');
 
-hasViolin = exist('violinplot', 'file') == 2;
+hasViolin = isfield(options, 'enable_violin') && options.enable_violin && exist('violinplot', 'file') == 2;
 
 nexttile;
 if hasViolin
@@ -336,13 +360,16 @@ if hasViolin
 else
     boxchart(ones(height(T),1), T.Cmax_uM, 'BoxFaceColor', options.color_cmax);
 end
+if options.auto_frame_cmax
+    ylim(compute_auto_limits(T.Cmax_uM, options.axis_margin_fraction, true));
+end
 title('Cmax'); ylabel('Cmax (uM)'); xticks([]); grid on;
 
 save_fig(h, outDir, '03_violin_or_box', options);
 end
 
 function h = plot_auc_vs_cmax_scatter(T, outDir, options)
-h = new_fig('AUC vs Cmax', options);
+h = new_fig('AUC vs Cmax', options, [1.0 1.0]);
 scatter(T.AUC_mg_h_L, T.Cmax_uM, 8, 'MarkerFaceColor', options.color_joint, ...
     'MarkerEdgeColor', 'none', 'MarkerFaceAlpha', 0.25);
 hold on;
@@ -351,6 +378,9 @@ xline(options.auc_target(1), '--', 'Color', [0.4 0.4 0.4]);
 xline(options.auc_target(2), '--', 'Color', [0.4 0.4 0.4]);
 yline(options.cmax_target(1), '--', 'Color', [0.4 0.4 0.4]);
 yline(options.cmax_target(2), '--', 'Color', [0.4 0.4 0.4]);
+if options.auto_frame_cmax
+    ylim(compute_auto_limits(T.Cmax_uM, options.axis_margin_fraction, true));
+end
 
 xlabel('AUC (mg h/L)');
 ylabel('Cmax (uM)');
@@ -361,7 +391,7 @@ save_fig(h, outDir, '04_auc_vs_cmax_scatter', options);
 end
 
 function h = plot_target_attainment_bars(targetTbl, outDir, options)
-h = new_fig('Target Attainment', options);
+h = new_fig('Target Attainment', options, [0.8 0.95]);
 b = bar(categorical(targetTbl.metric), targetTbl.percent_attained, 0.6);
 b.FaceColor = [0.30 0.60 0.30];
 ylabel('Attainment (%)');
@@ -382,7 +412,7 @@ n = options.top_n_tornado;
 sa = sensAUC(1:min(n,height(sensAUC)), :);
 sc = sensCmax(1:min(n,height(sensCmax)), :);
 
-h = new_fig('Tornado Sensitivity', options);
+h = new_fig('Tornado Sensitivity', options, [1.2 1.1]);
 tiledlayout(1,2,'Padding','compact','TileSpacing','compact');
 
 nexttile;
@@ -409,7 +439,7 @@ if n == 0
     return;
 end
 
-h = new_fig('Top Parameter Scatter Grid', options);
+h = new_fig('Top Parameter Scatter Grid', options, [max(1.2, 0.5*n) 1.35]);
 tiledlayout(2, n, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 for i = 1:n
@@ -433,12 +463,18 @@ for i = 1:n
     ylabel('Cmax');
     title(sprintf('%s vs Cmax', p), 'Interpreter', 'none');
     grid on;
+    if options.auto_frame_cmax
+        ylim(compute_auto_limits(T.Cmax_uM, options.axis_margin_fraction, true));
+    end
 end
 
 save_fig(h, outDir, '07_top_scatter_grid', options);
 end
 
 function h = plot_correlation_heatmap(T, paramCols, outDir, options)
+if numel(paramCols) > options.max_heatmap_vars
+    paramCols = paramCols(1:options.max_heatmap_vars);
+end
 vars = [paramCols(:)', {'AUC_mg_h_L', 'Cmax_uM'}];
 X = nan(height(T), numel(vars));
 for i = 1:numel(vars)
@@ -446,14 +482,14 @@ for i = 1:numel(vars)
 end
 R = corr(X, 'Type', 'Spearman', 'Rows', 'pairwise');
 
-h = new_fig('Spearman Correlation Heatmap', options);
+h = new_fig('Spearman Correlation Heatmap', options, [1.25 1.25]);
 imagesc(R);
 axis square;
 colormap(parula);
 colorbar;
 caxis([-1 1]);
 
-tickLbls = cellstr(strrep(vars, '_', '\_'));
+tickLbls = cellstr(strrep(shorten_labels(vars, options.tick_label_max_chars), '_', '\_'));
 set(gca, 'XTick', 1:numel(vars), 'YTick', 1:numel(vars));
 set(gca, 'XTickLabel', tickLbls, 'YTickLabel', tickLbls);
 set(gca, 'TickLabelInterpreter', 'tex');
@@ -480,7 +516,7 @@ nRows = splitapply(@numel, X.chunk_task_id, G);
 aucMean = splitapply(@mean, X.AUC_mg_h_L, G);
 cmaxMean = splitapply(@mean, X.Cmax_uM, G);
 
-h = new_fig('Task-Level QC', options);
+h = new_fig('Task-Level QC', options, [1.0 1.3]);
 tiledlayout(3,1,'Padding','compact','TileSpacing','compact');
 
 nexttile;
@@ -498,14 +534,20 @@ ylabel('Mean Cmax'); xlabel('chunk_task_id'); title('Task-level Mean Cmax'); gri
 save_fig(h, outDir, '09_task_level_qc', options);
 end
 
-function h = new_fig(name, options)
+function h = new_fig(name, options, sizeScale)
+if nargin < 3 || isempty(sizeScale)
+    sizeScale = [1 1];
+end
+figSize = options.fig_size_cm .* sizeScale;
 h = figure('Name', name, 'Color', 'w', 'Units', 'centimeters', ...
-    'Position', [1 1 options.fig_size_cm(1) options.fig_size_cm(2)]);
+    'Position', [1 1 figSize(1) figSize(2)]);
 
 % Keep on-screen and export canvas consistent.
 set(h, 'PaperUnits', 'centimeters');
-set(h, 'PaperSize', options.fig_size_cm);
-set(h, 'PaperPosition', [0 0 options.fig_size_cm(1) options.fig_size_cm(2)]);
+set(h, 'PaperSize', figSize);
+set(h, 'PaperPosition', [0 0 figSize(1) figSize(2)]);
+set(findall(h, '-property', 'FontSize'), 'FontSize', options.base_font_size);
+set(findall(h, '-property', 'LineWidth'), 'LineWidth', options.axis_line_width);
 end
 
 function save_fig(h, outDir, baseName, options)
@@ -518,17 +560,82 @@ figPath = fullfile(outDir, [baseName '.fig']);
 % Re-apply publication size in case figure was resized interactively.
 set(h, 'Units', 'centimeters');
 pos = get(h, 'Position');
-pos(3:4) = options.fig_size_cm;
+figSize = pos(3:4);
 set(h, 'Position', pos);
 set(h, 'PaperUnits', 'centimeters');
-set(h, 'PaperSize', options.fig_size_cm);
-set(h, 'PaperPosition', [0 0 options.fig_size_cm(1) options.fig_size_cm(2)]);
+set(h, 'PaperSize', figSize);
+set(h, 'PaperPosition', [0 0 figSize(1) figSize(2)]);
+
+style_axes_publication(h, options);
 
 % Disable axes toolbars/interactions before export to avoid toolbar artifacts.
 disable_axes_toolbars(h);
 
-exportgraphics(h, pngPath, 'Resolution', options.export_png_dpi);
-savefig(h, figPath);
+drawnow;
+if isfield(options, 'use_exportgraphics') && options.use_exportgraphics
+    try
+        exportgraphics(h, pngPath, 'Resolution', options.export_png_dpi);
+    catch ME
+        warning('analyze_MC10k_comprehensive:ExportGraphicsFailed', ...
+            'exportgraphics failed for %s (%s). Falling back to print().', baseName, ME.message);
+        try
+            print(h, pngPath, '-dpng', sprintf('-r%d', options.export_png_dpi));
+        catch ME2
+            warning('analyze_MC10k_comprehensive:PrintFallbackFailed', ...
+                'PNG export fallback also failed for %s: %s', baseName, ME2.message);
+        end
+    end
+else
+    try
+        print(h, pngPath, '-dpng', sprintf('-r%d', options.export_png_dpi));
+    catch ME
+        warning('analyze_MC10k_comprehensive:PrintPrimaryFailed', ...
+            'print() failed for %s (%s). Falling back to exportgraphics.', baseName, ME.message);
+        try
+            exportgraphics(h, pngPath, 'Resolution', options.export_png_dpi);
+        catch ME2
+            warning('analyze_MC10k_comprehensive:ExportGraphicsFallbackFailed', ...
+                'PNG export fallback also failed for %s: %s', baseName, ME2.message);
+        end
+    end
+end
+
+try
+    savefig(h, figPath);
+catch ME
+    warning('analyze_MC10k_comprehensive:SaveFigFailed', ...
+        'savefig failed for %s: %s', baseName, ME.message);
+end
+
+if isfield(options, 'export_pdf') && options.export_pdf
+    pdfPath = fullfile(outDir, [baseName '.pdf']);
+    if isfield(options, 'use_exportgraphics') && options.use_exportgraphics
+        ct = 'image';
+        if isfield(options, 'pdf_content_type') && ~isempty(options.pdf_content_type)
+            ct = char(lower(string(options.pdf_content_type)));
+            if ~strcmp(ct, 'image') && ~strcmp(ct, 'vector')
+                ct = 'image';
+            end
+        end
+        try
+            exportgraphics(h, pdfPath, 'ContentType', ct);
+        catch
+            try
+                print(h, pdfPath, '-dpdf', '-painters');
+            catch
+            end
+        end
+    else
+        try
+            print(h, pdfPath, '-dpdf', '-painters');
+        catch
+            try
+                exportgraphics(h, pdfPath, 'ContentType', 'image');
+            catch
+            end
+        end
+    end
+end
 end
 
 function ok = try_violinplot(y, colorVal)
@@ -584,6 +691,80 @@ for i = 1:numel(axs)
         end
     catch
         % Keep export resilient across MATLAB versions.
+    end
+end
+end
+
+function lim = compute_auto_limits(x, marginFrac, clampToZero) %#ok<DEFNU>
+if nargin < 2 || isempty(marginFrac)
+    marginFrac = 0.08;
+end
+if nargin < 3
+    clampToZero = false;
+end
+
+x = to_numeric(x);
+x = x(isfinite(x));
+if isempty(x)
+    lim = [0 1];
+    return;
+end
+
+xMin = min(x);
+xMax = max(x);
+if xMax <= xMin
+    span = max(abs(xMax), 1);
+    pad = 0.1 * span;
+else
+    span = xMax - xMin;
+    pad = max(span * marginFrac, eps(max(abs([xMin, xMax]))));
+end
+
+lo = xMin - pad;
+hi = xMax + pad;
+if clampToZero
+    lo = max(0, lo);
+end
+if hi <= lo
+    hi = lo + 1;
+end
+
+lim = [lo hi];
+end
+
+function out = shorten_labels(in, maxChars)
+out = string(in);
+for i = 1:numel(out)
+    if strlength(out(i)) > maxChars
+        out(i) = extractBefore(out(i), maxChars - 2) + "..";
+    end
+end
+end
+
+function style_axes_publication(figHandle, options)
+axs = findall(figHandle, 'Type', 'axes');
+for i = 1:numel(axs)
+    try
+        set(axs(i), 'FontSize', options.base_font_size, 'LineWidth', options.axis_line_width, 'Box', 'off');
+        if ~isempty(axs(i).XLabel)
+            axs(i).XLabel.FontSize = options.label_font_size;
+        end
+        if ~isempty(axs(i).YLabel)
+            axs(i).YLabel.FontSize = options.label_font_size;
+        end
+        if ~isempty(axs(i).Title)
+            axs(i).Title.FontSize = options.title_font_size;
+            axs(i).Title.FontWeight = 'bold';
+        end
+    catch
+    end
+end
+lg = findall(figHandle, 'Type', 'Legend');
+for i = 1:numel(lg)
+    try
+        lg(i).FontSize = options.legend_font_size;
+        lg(i).Box = 'off';
+    catch
     end
 end
 end

@@ -24,7 +24,7 @@ make jpeg
 
 echo "Exporting to Excel..."
 # Using ${SLURM_JOB_ID} is more reliable in bash than %j
-python3 export_outputs_to_excel.py --folder output --outdir Sim_results_${SLURM_JOB_ID}_csv
+python3 scripts/python/export_outputs_to_excel.py --folder output --outdir Sim_results_${SLURM_JOB_ID}_csv
 
 conda deactivate
 make movie

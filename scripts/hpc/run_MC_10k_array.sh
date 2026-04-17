@@ -83,7 +83,7 @@ is_pos_int "${CHUNK_SIZE}" || die "CHUNK_SIZE must be a positive integer (got ${
 is_nonneg_int "${SEED_BASE}" || die "SEED_BASE must be a non-negative integer (got ${SEED_BASE})"
 is_nonneg_int "${RETRY_ATTEMPTS}" || die "RETRY_ATTEMPTS must be a non-negative integer (got ${RETRY_ATTEMPTS})"
 
-[[ -f "MC_5FU_PK_sensitivity.m" ]] || die "MC_5FU_PK_sensitivity.m not found in ${SLURM_SUBMIT_DIR}"
+[[ -f "matlab/analysis/MC_5FU_PK_sensitivity.m" ]] || die "matlab/analysis/MC_5FU_PK_sensitivity.m not found in ${SLURM_SUBMIT_DIR}"
 
 {
 	echo "job_id=${SLURM_JOB_ID:-na}"
@@ -115,7 +115,7 @@ while [[ ${ATTEMPT} -lt ${MAX_ATTEMPTS} ]]; do
 	log "INFO" "Starting MATLAB attempt ${ATTEMPT}/${MAX_ATTEMPTS}"
 
 	set +e
-	matlab -batch "try, MC_5FU_PK_sensitivity(${CHUNK_SIZE}, '${TASK_OUT}', true, ${TASK_SEED}, true); catch ME, disp(getReport(ME,'extended')); exit(1); end; exit(0);" > "${ATTEMPT_LOG}" 2>&1
+	matlab -batch "try, addpath(genpath(fullfile(pwd,'matlab'))); MC_5FU_PK_sensitivity(${CHUNK_SIZE}, '${TASK_OUT}', true, ${TASK_SEED}, true); catch ME, disp(getReport(ME,'extended')); exit(1); end; exit(0);" > "${ATTEMPT_LOG}" 2>&1
 	MATLAB_RC=$?
 	set -e
 

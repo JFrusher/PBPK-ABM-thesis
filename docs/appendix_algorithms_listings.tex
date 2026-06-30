@@ -1,0 +1,183 @@
+% Appendix section: PBPK-ABM algorithms and implementation listings
+% Drop this into your dissertation with: \input{docs/appendix_algorithms_listings}
+% Assumes the preamble already includes algorithm2e, listings, and matlab-prettifier.
+
+\section{Implementation Algorithms and Code Listings}
+\label{sec:appendix-implementation-listings}
+
+\subsection{Hybrid PBPK--ABM Workflow}
+\begin{algorithm}[H]
+\caption{Hybrid PBPK--ABM simulation loop with periodic coupling}
+\label{alg:appendix-hybrid-workflow}
+\DontPrintSemicolon
+\KwIn{Dosing schedule, PBPK parameters, ABM initial tissue}
+Initialize PBPK and ABM states\;
+\For{$t \leftarrow 0$ \KwTo $t_{\max}$}{
+  Advance substrate diffusion--decay on ABM mesh\;
+  Advance all ABM cells (cycle, death, mechanics, motility)\;
+  Interpolate PBPK concentrations at current $t$\;
+  Inject $5$FU/FdUMP/FdUTP/FUTP fields into ABM microenvironment\;
+  \If{$t \bmod 60\,\mathrm{min}=0$}{
+    Record diagnostics and synchronized outputs\;
+  }
+  Update simulation clock\;
+}
+\end{algorithm}
+
+\subsection{Ring-Based Tumour Seeding}
+\begin{algorithm}[H]
+\caption{Ring-based initialization of tumour and stromal/immune composition}
+\label{alg:appendix-ring-seeding}
+\DontPrintSemicolon
+\KwIn{Ring table $\mathcal{R}$ with $(r_{\min},r_{\max},n_{type})$}
+\ForEach{ring entry in $\mathcal{R}$}{
+  \ForEach{cell type with count $n$ in this ring}{
+    \For{$i\leftarrow 1$ \KwTo $n$}{
+      Sample $\theta \sim U(0,2\pi)$\;
+      Sample $r \sim \sqrt{U(r_{\min}^2,r_{\max}^2)}$ \tcp*{area-uniform annulus}
+      Set $(x,y,z)=(r\cos\theta,r\sin\theta,0)$\;
+      Place one agent of the selected cell type at $(x,y,z)$\;
+    }
+  }
+}
+Write all agents to \texttt{cellsX.csv}\;
+\end{algorithm}
+
+\subsection{Per-Cell Phenotype Update Under Drug Exposure}
+\begin{algorithm}[H]
+\caption{Per-cell drug response with S-phase sensitivity and apoptosis update}
+\label{alg:appendix-phenotype-update}
+\DontPrintSemicolon
+\KwIn{Local $5$FU/FdUMP/FdUTP/FUTP, cycle phase, custom resistance data, $\Delta t$}
+Read local metabolite concentrations at cell voxel\;
+Apply ABC-efflux scaling to obtain effective intracellular exposure\;
+\If{cell is in S-phase}{
+  Compute DNA damage contributions from FdUMP and FdUTP\;
+}
+Compute RNA damage contribution from FUTP\;
+Update total damage with repair term; clamp to $[0,1]$\;
+\If{damage exceeds apoptosis threshold}{
+  Increase apoptosis rate proportionally to excess damage\;
+}
+Update cumulative exposure and ABC-transporter induction\;
+Apply updated death and resistance state to phenotype\;
+\end{algorithm}
+
+\subsection{Two-Mode Euler Stepping with Circadian DPD Modulation}
+\begin{lstlisting}[style=Matlab-editor,caption={Fixed/adaptive Euler stepping with circadian Vmax scaling},label={lst:appendix-two-mode-euler}]
+% Build timeline
+if strcmp(params.solver_method,'fixed')
+    time_min = (0:params.fixed_timestep_min:maxTime)';
+else
+    time_min = buildAdaptiveTimeline(dosingRegimen, ...
+        params.adaptive_fine_timestep_min, ...
+        params.adaptive_coarse_timestep_min, ...
+        params.adaptive_window_before_min, ...
+        params.adaptive_window_after_min, maxTime);
+end
+
+% Integrate ODE system
+for t = 2:length(time_min)
+    dt_actual = time_min(t) - time_min(t-1);
+    currentTime = time_min(t-1);
+    hourOfDay = mod(currentTime,1440)/60;
+    DPD_factor = calculateCircadianDPD(hourOfDay, params);
+    Vmax_current = params.Vmax_DPD * DPD_factor;
+
+    dosingRate = calculateDosingRate(currentTime, dosingRegimen);
+    dCdt = calculate5FUSystemODEs(C, t-1, dosingRate, ...
+        DPD_factor, params, currentTime, dt_actual, logger);
+    C = updateConcentrations(C, dCdt, t, dt_actual);  % Euler step
+end
+\end{lstlisting}
+
+\subsection{PhysiCell Output Export and Feature Engineering}
+\begin{algorithm}[H]
+\caption{Pipeline from MultiCellDS snapshots to curve-fitter tables}
+\label{alg:appendix-export-pipeline}
+\DontPrintSemicolon
+\KwIn{Set of PhysiCell \texttt{output*.xml} snapshots}
+Parse each snapshot to recover cells, substrates, and metadata\;
+Aggregate time-indexed summaries (counts, phases, densities)\;
+Compute spatial/radial statistics by cell type\;
+Compute microenvironment summary statistics\;
+Assemble long-format and wide-format analysis tables\;
+Generate curve-fitter table and highlight metrics\;
+Write CSV outputs and metadata for reproducible post-processing\;
+\end{algorithm}
+
+\subsection{Monte Carlo Sensitivity Workflow}
+\begin{algorithm}[H]
+\caption{LHS-driven Monte Carlo sensitivity analysis for PBPK outputs}
+\label{alg:appendix-mc-sensitivity}
+\DontPrintSemicolon
+\KwIn{$N$ samples, parameter ranges, dosing input}
+Generate Latin Hypercube samples for selected PBPK parameters\;
+Run one pre-flight simulation to validate pipeline\;
+\ForEach{sample in parallel}{
+  Apply parameter overrides\;
+  Run PBPK simulation\;
+  Extract AUC/Cmax and key endpoints\;
+  Save chunk-level outputs and checkpoint state\;
+}
+Merge outputs; compute Spearman sensitivity metrics\;
+Generate summary tables and figures\;
+\end{algorithm}
+
+\subsection{Numerical Audit and Verification}
+\begin{lstlisting}[style=Matlab-editor,caption={Numerical audit checks for PBPK trajectory quality},label={lst:appendix-numerical-audit}]
+results = run5FU_PBPK_Simulation(inputCsv, outputPrefix, paramOverrides);
+t = results.time_min(:);
+C = results.concentrations;
+
+% 1) Timestep diagnostics
+dt = diff(t);
+report.time.min_dt = min(dt);
+report.time.max_dt = max(dt);
+report.time.n_nonpositive_dt = sum(dt <= 0);
+
+% 2) Jump and clipping checks on key signals
+for name = keySignals
+    y = C.(name{1})(:);
+    dy = diff(y);
+    slope = dy ./ max(dt, eps);
+    rel = abs(dy) ./ max(abs(y(1:end-1)), 1e-9);
+    jumpMask = abs(slope) > jumpAbs | rel > jumpRel;
+end
+
+% 3) Cumulative monotonicity + mass-balance checks
+report.mass.accounted_fraction = results.mass_balance.accounted_fraction;
+\end{lstlisting}
+
+\subsection{HPC Chunked Execution and Reproducibility}
+\begin{lstlisting}[language=bash,caption={SLURM array submission pattern for chunked MC runs},label={lst:appendix-hpc-submission}]
+TOTAL_SAMPLES=${TOTAL_SAMPLES:-10000}
+CHUNK_SIZE=${CHUNK_SIZE:-100}
+MAX_CONCURRENT=${MAX_CONCURRENT:-20}
+ARRAY_TASKS=$(( (TOTAL_SAMPLES + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+ARRAY_SPEC="1-${ARRAY_TASKS}%${MAX_CONCURRENT}"
+
+sbatch \
+  --array="${ARRAY_SPEC}" \
+  --export=ALL,CHUNK_SIZE=${CHUNK_SIZE},SEED_BASE=${SEED_BASE},OUT_ROOT=${OUT_ROOT} \
+  scripts/hpc/run_MC_10k_array.sh
+
+# Worker script executes one task/chunk and validates outputs
+# before writing TASK_SUCCESS / TASK_FAILED markers.
+\end{lstlisting}
+
+\subsection{Unit-Test Evidence for Model Plumbing}
+\begin{algorithm}[H]
+\caption{Unit-test pattern for model configuration and substrate behavior checks}
+\label{alg:appendix-unit-test-pattern}
+\DontPrintSemicolon
+\KwIn{Test fixture configuration, expected substrate/cell-definition behavior}
+Set up minimal model state and input configuration\;
+Execute targeted function or short simulation step\;
+Assert expected changes in fields/definitions/outputs\;
+Report pass/fail and write diagnostic traces if failed\;
+Use focused cases for custom Dirichlet and cell-definition logic\;
+\end{algorithm}
+
+\paragraph{Appendix integration note.}
+This section is intended as an implementation appendix: concise algorithmic summaries are paired with representative code fragments to preserve reproducibility while avoiding framework boilerplate.

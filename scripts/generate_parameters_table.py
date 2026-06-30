@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""Generate a LaTeX longtable summary of PhysiCell cell definition parameters."""
+
+from __future__ import annotations
+
+import argparse
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List, Optional
+
+
+@dataclass
+class ParameterRow:
+    cell_definition: str
+    category: str
+    parameter_name: str
+    value: str
+    units: str
+    description: str
+
+
+IRRELEVANT_NAME_TOKENS = {
+    "enabled",
+    "normalize each gradient",
+    "use 2d",
+    "direction",
+    "substrate",
+    "chemotactic sensitivity",
+}
+
+SENTINEL_MAGNITUDE_CUTOFF = 1e8
+
+
+def latex_escape(text: str) -> str:
+    """Escape LaTeX special characters in plain text content."""
+    replacements = {
+        "\\": r"\\textbackslash{}",
+        "&": r"\\&",
+        "%": r"\\%",
+        "$": r"\\$",
+        "#": r"\\#",
+        "_": r"\\_",
+        "{": r"\\{",
+        "}": r"\\}",
+        "~": r"\\textasciitilde{}",
+        "^": r"\\textasciicircum{}",
+    }
+    return "".join(replacements.get(ch, ch) for ch in text)
+
+
+def pretty_tag(tag: str) -> str:
+    """Convert XML tag names into title-cased labels for table output."""
+    cleaned = tag.replace("_", " ").strip()
+    return " ".join(word.capitalize() for word in cleaned.split())
+
+
+def normalize_value(text: Optional[str]) -> str:
+    if text is None:
+        return ""
+    return " ".join(text.split())
+
+
+def infer_category(path: List[str]) -> str:
+    if not path:
+        return "Other"
+
+    if path[0] == "phenotype":
+        if len(path) > 1 and path[1] == "motility":
+            return "Motility"
+        return "Phenotype"
+
+    if path[0] == "custom_data":
+        return "Custom Data"
+
+    if path[0] == "initial_parameter_distributions":
+        return "Initial Parameter Distributions"
+
+    return pretty_tag(path[0])
+
+
+def build_parameter_name(path: List[str]) -> str:
+    if not path:
+        return ""
+
+    if path[0] == "phenotype":
+        trimmed = path[1:]
+    elif path[0] == "custom_data":
+        trimmed = path[1:]
+    else:
+        trimmed = path
+
+    if not trimmed:
+        return pretty_tag(path[-1])
+
+    return ": ".join(pretty_tag(part) for part in trimmed)
+
+
+def extract_rows_from_element(
+    element: ET.Element,
+    cell_name: str,
+    base_path: List[str],
+) -> Iterable[ParameterRow]:
+    """Flatten nested XML leaves into table rows."""
+    pending_comment = ""
+
+    for child in list(element):
+        # ET.Comment nodes use a non-string sentinel as their tag.
+        if not isinstance(child.tag, str):
+            comment_text = normalize_value(child.text)
+            if comment_text:
+                pending_comment = comment_text
+            continue
+
+        current_path = base_path + [child.tag]
+        value = normalize_value(child.text)
+
+        has_element_children = any(isinstance(grandchild.tag, str) for grandchild in list(child))
+        description = child.attrib.get("description", "")
+        if not description and pending_comment:
+            description = pending_comment
+
+        if value or (not has_element_children and child.attrib):
+            yield ParameterRow(
+                cell_definition=cell_name,
+                category=infer_category(current_path),
+                parameter_name=build_parameter_name(current_path),
+                value=value,
+                units=child.attrib.get("units", ""),
+                description=description,
+            )
+            pending_comment = ""
+
+        if has_element_children:
+            yield from extract_rows_from_element(child, cell_name, current_path)
+            pending_comment = ""
+
+
+def extract_cell_definition_rows(root: ET.Element) -> List[ParameterRow]:
+    rows: List[ParameterRow] = []
+
+    for cell_def in root.findall("./cell_definitions/cell_definition"):
+        cell_name = cell_def.attrib.get("name", "unknown")
+
+        phenotype = cell_def.find("phenotype")
+        if phenotype is not None:
+            rows.extend(extract_rows_from_element(phenotype, cell_name, ["phenotype"]))
+
+        custom_data = cell_def.find("custom_data")
+        if custom_data is not None:
+            rows.extend(extract_rows_from_element(custom_data, cell_name, ["custom_data"]))
+
+        initial_distributions = cell_def.find("initial_parameter_distributions")
+        if initial_distributions is not None:
+            rows.extend(
+                extract_rows_from_element(
+                    initial_distributions,
+                    cell_name,
+                    ["initial_parameter_distributions"],
+                )
+            )
+
+    rows.sort(
+        key=lambda r: (
+            r.cell_definition.lower(),
+            r.category.lower(),
+            r.parameter_name.lower(),
+        )
+    )
+    return rows
+
+
+def to_longtable(rows: List[ParameterRow], caption: str, label: str) -> str:
+    lines: List[str] = []
+    lines.append("% Auto-generated by scripts/generate_parameters_table.py")
+    lines.append("% Requires: \\usepackage{longtable,booktabs}")
+    lines.append(r"\begin{longtable}{p{2.6cm} p{2.2cm} p{3.4cm} p{2.0cm} p{1.4cm} p{4.8cm}}")
+    lines.append(rf"\caption{{{latex_escape(caption)}}}\\")
+    lines.append(rf"\label{{{latex_escape(label)}}}\\")
+    lines.append(r"\toprule")
+    lines.append(r"Cell Definition & Category & Parameter Name & Value & Units & Description \\")
+    lines.append(r"\midrule")
+    lines.append(r"\endfirsthead")
+    lines.append(r"\toprule")
+    lines.append(r"Cell Definition & Category & Parameter Name & Value & Units & Description \\")
+    lines.append(r"\midrule")
+    lines.append(r"\endhead")
+    lines.append(r"\midrule")
+    lines.append(r"\multicolumn{6}{r}{\footnotesize Continued on next page}\\")
+    lines.append(r"\midrule")
+    lines.append(r"\endfoot")
+    lines.append(r"\bottomrule")
+    lines.append(r"\endlastfoot")
+
+    prev_cell = None
+    prev_category = None
+
+    for row in rows:
+        if row.cell_definition != prev_cell:
+            if prev_cell is not None:
+                lines.append(r"\midrule")
+            lines.append(
+                rf"\multicolumn{{6}}{{l}}{{\textbf{{Cell Definition: {latex_escape(row.cell_definition)}}}}}\\"
+            )
+            prev_cell = row.cell_definition
+            prev_category = None
+
+        if row.category != prev_category:
+            lines.append(
+                rf"\multicolumn{{6}}{{l}}{{\textit{{Category: {latex_escape(row.category)}}}}}\\"
+            )
+            prev_category = row.category
+
+        lines.append(
+            " & ".join(
+                [
+                    latex_escape(row.cell_definition),
+                    latex_escape(row.category),
+                    latex_escape(row.parameter_name),
+                    latex_escape(row.value),
+                    latex_escape(row.units),
+                    latex_escape(row.description),
+                ]
+            )
+            + r" \\"
+        )
+
+    lines.append(r"\end{longtable}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def parse_float(value: str) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_significant_row(row: ParameterRow) -> bool:
+    value = row.value.strip()
+    if not value:
+        return False
+
+    value_lower = value.lower()
+    if value_lower in {"true", "false"}:
+        return False
+
+    numeric_value = parse_float(value)
+    if numeric_value is not None:
+        # Aggressive significance pruning for dissertation readability.
+        if abs(numeric_value) < 1e-12:
+            return False
+        if abs(numeric_value - 1.0) < 1e-12:
+            return False
+        if abs(numeric_value) >= SENTINEL_MAGNITUDE_CUTOFF:
+            return False
+
+    lowered_name = row.parameter_name.lower()
+    if any(token in lowered_name for token in IRRELEVANT_NAME_TOKENS):
+        return False
+
+    return True
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate a LaTeX longtable of PhysiCell cell definition parameters."
+    )
+    parser.add_argument(
+        "--xml",
+        default="config/PhysiCell_settings.xml",
+        help="Path to PhysiCell settings XML file.",
+    )
+    parser.add_argument(
+        "--out",
+        default="parameters_table.tex",
+        help="Output path for generated LaTeX table.",
+    )
+    parser.add_argument(
+        "--caption",
+        default="PhysiCell Cell Definition Parameters",
+        help="Table caption.",
+    )
+    parser.add_argument(
+        "--label",
+        default="tab:physicell-parameters",
+        help="Table label.",
+    )
+    parser.add_argument(
+        "--all-values",
+        action="store_true",
+        help="Include all rows, including values typically filtered as non-significant.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    xml_path = Path(args.xml)
+    out_path = Path(args.out)
+
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+    tree = ET.parse(xml_path, parser=parser)
+    root = tree.getroot()
+
+    rows = extract_cell_definition_rows(root)
+    if not args.all_values:
+        rows = [row for row in rows if is_significant_row(row)]
+    latex = to_longtable(rows, caption=args.caption, label=args.label)
+
+    out_path.write_text(latex, encoding="utf-8")
+    print(f"Wrote {len(rows)} rows to {out_path}")
+
+
+if __name__ == "__main__":
+    main()

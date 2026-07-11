@@ -3,8 +3,8 @@ function mass_balance = calculateMassBalance(time_min, C, params)
 
 V_central = params.V_central;
 V_peripheral = params.V_peripheral;
-V_liver = params.V_liver * params.BW;
-V_tumor = params.V_tumor * params.BW;
+V_liver = params.V_liver;   % absolute L (was x BW -> 127 L bug)
+V_tumor = params.V_tumor;   % absolute L
 
 parent_in_compartments = C.C_central(end) * V_central + ...
     C.C_peripheral(end) * V_peripheral + ...
@@ -29,4 +29,12 @@ mass_balance.excreted_umol = excreted_total;
 mass_balance.total_accounted_umol = total_accounted;
 mass_balance.unaccounted_umol = total_input - total_accounted;
 mass_balance.accounted_fraction = total_accounted / max(total_input, 1e-9);
+
+% Strict closed-system check: with the clean RHS (no clamps) input should equal
+% compartments + metabolites + catabolites + excreted to within integration error.
+if total_input > 1e-6 && abs(mass_balance.accounted_fraction - 1) > 0.01
+    warning('calculateMassBalance:NotClosed', ...
+        'Mass balance off by %.2f%% (accounted %.4f of %.3f umol input) - check kinetics/params.', ...
+        100 * (1 - mass_balance.accounted_fraction), mass_balance.accounted_fraction, total_input);
+end
 end

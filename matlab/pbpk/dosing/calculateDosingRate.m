@@ -1,4 +1,4 @@
-function rate = calculateDosingRate(currentTime, dosingRegimen)
+function rate = calculateDosingRate(currentTime, dosingRegimen, allowCustomEval)
 % DOSING RATE CALCULATION FUNCTION
 % ================================================================================
 %
@@ -240,6 +240,7 @@ function rate = calculateDosingRate(currentTime, dosingRegimen)
 % ================================================================================
     rate = 0;
     MW_5FU = 130.08;
+    if nargin < 3 || isempty(allowCustomEval), allowCustomEval = false; end
 
     for i = 1:height(dosingRegimen)
         startTime = dosingRegimen.start_time_min(i);
@@ -355,11 +356,12 @@ function rate = calculateDosingRate(currentTime, dosingRegimen)
                 if ismember('custom_function', dosingRegimen.Properties.VariableNames)
                     exprRaw = dosingRegimen.custom_function(i);
                     expr = strtrim(string(exprRaw));
-                    if strlength(expr) > 0
+                    if strlength(expr) > 0 && allowCustomEval
                         try
-                            % NOTE: executes arbitrary MATLAB expressions from the input CSV's
-                            % custom_function column. Safe only because dosing files are self-authored;
-                            % do not feed this an untrusted CSV.
+                            % SECURITY: executes arbitrary MATLAB from the input CSV's
+                            % custom_function column. Gated behind allowCustomEval
+                            % (params.allow_custom_function_eval, default false). Only
+                            % enable for self-authored, trusted dosing files.
                             fn = str2func(['@(t)' char(expr)]);
                             customRate = fn(currentTime);
                         catch

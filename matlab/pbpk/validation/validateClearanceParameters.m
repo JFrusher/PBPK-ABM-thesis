@@ -134,7 +134,10 @@ fprintf('╚══════════════════════�
 
 % Calculate intrinsic clearance at low concentrations
 % CL_int = Vmax / Km (only valid when C << Km)
-CL_int_L_min = params.Vmax_DPD / params.Km_DPD; % µmol/min / (mg/L)
+% Km_DPD is in mg/L; convert to umol/L so Vmax[umol/min]/Km[umol/L] = L/min.
+% (Was dividing umol/min by mg/L and mislabelling the result "L/min".)
+Km_umol_L = params.Km_DPD / 130.08 * 1000;
+CL_int_L_min = params.Vmax_DPD / Km_umol_L; % µmol/min / (mg/L)
 % Note: Unit analysis - need to be careful here with unit consistency
 
 % Hepatic blood flow (physical upper limit for liver clearance)

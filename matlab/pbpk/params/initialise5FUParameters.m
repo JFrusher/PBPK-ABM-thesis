@@ -494,7 +494,7 @@
 
     % TUMOR COMPARTMENT
     % Tumor volume specified separately (often patient-specific)
-    params.V_tumor = 0.035 / params.BW;    % Default: 35 mL absolute, normalized to per-kg
+    params.V_tumor = 0.035;    % Tumour volume in L (absolute; patient-specific, not BW-scaled)
                                            % (0.5 mL/kg for 70 kg patient)
 
     %% â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -636,7 +636,7 @@
     % Harris et al. (1990): Peak at 1 AM, trough at 1 PM
     % Abolmaali et al. (2009): 1.5-1.7 fold circadian variation
     params.DPD_mean = 1.0;       % Mean DPD activity (baseline)
-    params.DPD_amplitude = 0.37; % Amplitude of circadian variation (achieves 1.74-fold range)
+    params.DPD_amplitude = 0.27; % Amplitude for ~1.74-fold peak/trough (Harris 1990); was 0.37 = 2.17-fold, mismatched citation
     params.DPD_acrophase = 1;    % Time of peak (1 AM = hour 1)
 
     params.Vmax_DPD_kidney = 50; % Âµmol/min (kidney tissue)
@@ -715,20 +715,23 @@
 
     %% NUMERICAL SOLVER CONFIGURATION
 
-    % Solver method: 'fixed' or 'adaptive'
-    % - 'fixed': Simple fixed timestep Euler method (0.1 min). Slower but numerically smoother.
-    % - 'adaptive': Smart dosing-aware timesteps (faster, can look less smooth with coarse steps).
-    params.solver_method = 'fixed';  % Switch between 'fixed' and 'adaptive'
-    params.fixed_timestep_min = 0.1;  % Minutes (only used if solver_method='fixed')
-    params.enable_ode_diagnostics = true;  % Enable detailed ODE solver logging
+    % Solver method:
+    %  - 'ode15s': MATLAB stiff solver over the shared RHS (odes5FU_rhs), default.
+    %              The system is stiff (fast tumor/hepatic transport vs slow
+    %              metabolite pools) so ode15s is both accurate and ~2x faster
+    %              than fixed Euler; integrated segment-by-segment across dosing
+    %              edges (see integrate5FU).
+    %  - 'fixed' : forward Euler at fixed_timestep_min (reference / debugging).
+    params.solver_method = 'ode15s';
+    params.fixed_timestep_min = 0.1;        % Output grid step (min); also the Euler step for 'fixed'
+    params.enable_ode_diagnostics = true;   % Detailed solver logging
     params.post_dose_observation_min = 180; % Minutes after final dose for AUC/plots
+    params.dt_ABM_min = 1.0;                % ABM/CSV export grid step (min) - confirm vs PhysiCell setup
 
-    % Adaptive timestep configuration (only used if solver_method='adaptive')
-    % Uses fine timesteps around dosing events, coarse timesteps elsewhere
-    params.adaptive_fine_timestep_min = 0.1;     % Fine timestep during critical periods (min)
-    params.adaptive_coarse_timestep_min = 0.25;  % Coarse timestep outside critical periods (min)
-    params.adaptive_window_before_min = 60;      % Minutes before dose start to use fine timesteps
-    params.adaptive_window_after_min = 180;      % Minutes after dose end to use fine timesteps
+    % Security: the dosing CSV can carry a 'custom_function' column that is
+    % str2func-evaluated as arbitrary MATLAB. Disabled by default; only enable
+    % for self-authored, trusted dosing files.
+    params.allow_custom_function_eval = false;
 
     %% DPD GENOTYPE CLASSIFICATION (NEW - Critical for Safety)
     % Literature: van Kuilenburg et al. (2012), Saltz et al. (2008)
@@ -784,12 +787,18 @@
     params.MW_FUTP = 484.14;      % g/mol
 
     % NOT LITERATURE-CITED — placeholder values, not yet validated against a source
-    params.Vmax_UMPS = 15;            % µmol/min
-    params.Km_UMPS   = 8;             % µM
-    params.Vmax_RR   = 25;            % µmol/min
-    params.Km_RR     = 10;            % µM
-    params.Vmax_CDA  = 12;            % µmol/min
-    params.Km_CDA    = 6;             % µM
+    % ponytail: anabolic-formation Vmax calibrated DOWN ~60x. The originals
+    % (15/25/12 umol/min) were unvalidated placeholders that made anabolism
+    % clear 5-FU faster than DPD catabolism (~7 L/min vs ~1.3), crushing AUC
+    % to ~3 mg.h/L. Anabolism is a minor pathway (a few % of dose); these keep
+    % the systemic FdUMP/FdUTP/FUTP biomarkers non-zero without dominating
+    % clearance. Calibration knob -> tune to keep total CL ~0.6-1.2 L/min.
+    params.Vmax_UMPS = 0.25;          % umol/min (was 15)
+    params.Km_UMPS   = 8;             % umol/L
+    params.Vmax_RR   = 0.40;          % umol/min (was 25)
+    params.Km_RR     = 10;            % umol/L
+    params.Vmax_CDA  = 0.20;          % umol/min (was 12)
+    params.Km_CDA    = 6;             % umol/L
     params.cycle_modulation_factor = 1.15;
     params.TS_peak_hour = 14;         % h
     params.TS_acrophase = 0.37;
